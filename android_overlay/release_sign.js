@@ -42,13 +42,24 @@ if (!gradle.includes('signingConfigs {')) {
   );
 }
 
-gradle = gradle.replace(
-  /release\s*\{([\s\S]*?)\n(\s*)\}/,
-  (m, inner, ind) => {
-    if (inner.includes('signingConfig')) return m;
-    return 'release {' + inner + '\n' + ind + '    signingConfig signingConfigs.release\n' + ind + '}';
+// 3) aplica signingConfig no buildTypes.release (e SÓ nele — o primeiro
+//    "release {" do arquivo é o do signingConfigs, por isso a busca parte
+//    do índice de "buildTypes")
+if (!gradle.includes('signingConfig signingConfigs.release')) {
+  const btIdx = gradle.indexOf('buildTypes');
+  const relIdx = gradle.indexOf('release', btIdx);
+  const braceIdx = gradle.indexOf('{', relIdx);
+  const close = /\n([ \t]*)\}/.exec(gradle.slice(braceIdx));
+  if (btIdx < 0 || relIdx < 0 || braceIdx < 0 || !close) {
+    console.error('[release_sign] Nao achei o bloco buildTypes.release em app/build.gradle');
+    process.exit(1);
   }
-);
+  const at = braceIdx + close.index + 1; // início da linha de fechamento
+  gradle =
+    gradle.slice(0, at) +
+    close[1] + '    signingConfig signingConfigs.release\n' +
+    gradle.slice(at);
+}
 
 fs.writeFileSync(gradlePath, gradle);
 console.log('[release_sign] signingConfigs.release injetado em app/build.gradle');
