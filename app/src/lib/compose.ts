@@ -132,8 +132,8 @@ function drawBlurredBackground(
 }
 
 /**
- * Uma camada de conteúdo: o quadro de um clipe, com opacidade e recorte
- * opcionais (usados pelas transições da montagem — Etapa 6).
+ * Uma camada de conteúdo: o quadro de um clipe, com opacidade, recorte e
+ * deslocamento/escala opcionais (usados pelas transições da montagem).
  */
 export interface FrameLayer {
   source: FrameSource;
@@ -141,6 +141,29 @@ export interface FrameLayer {
   alpha?: number;
   /** Recorte em coordenadas do layout (transição wipe). */
   clip?: { x: number; y: number; w: number; h: number } | null;
+  /**
+   * Deslocamento/escala da camada (Etapa 12): `scale` gira em torno do
+   * centro do layout (transição zoom) e `x`/`y` deslocam em px do layout
+   * (transição push).
+   */
+  transform?: { x?: number; y?: number; scale?: number };
+}
+
+/** Aplica o transform da camada (escala no centro + deslocamento). */
+function applyLayerTransform(
+  ctx: CanvasRenderingContext2D,
+  transform: NonNullable<FrameLayer['transform']>,
+  m: FrameLayout,
+): void {
+  const scale = transform.scale ?? 1;
+  if (scale !== 1) {
+    ctx.translate(m.width / 2, m.height / 2);
+    ctx.scale(scale, scale);
+    ctx.translate(-m.width / 2, -m.height / 2);
+  }
+  const x = transform.x ?? 0;
+  const y = transform.y ?? 0;
+  if (x !== 0 || y !== 0) ctx.translate(x, y);
 }
 
 /** Extras de desenho aplicados entre o conteúdo e a legenda. */
@@ -199,6 +222,7 @@ export class FrameComposer {
     for (const layer of layers) {
       ctx.save();
       ctx.globalAlpha = layer.alpha ?? 1;
+      if (layer.transform) applyLayerTransform(ctx, layer.transform, m);
       if (layer.clip) {
         ctx.beginPath();
         ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);
@@ -213,6 +237,7 @@ export class FrameComposer {
       const rect = containRect(layer.source.width, layer.source.height, m);
       ctx.save();
       ctx.globalAlpha = layer.alpha ?? 1;
+      if (layer.transform) applyLayerTransform(ctx, layer.transform, m);
       if (layer.clip) {
         ctx.beginPath();
         ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);

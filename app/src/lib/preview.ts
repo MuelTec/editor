@@ -240,6 +240,7 @@ export function startMontagePreview(
     seek: (time: number) => {
       clock = Math.max(0, time);
       lastFrame = 0;
+      renderer?.seek(clock);
     },
     update: async (next: Partial<MontagePreviewOptions>) => {
       const clipsChanged = next.clips && next.clips !== current.clips;

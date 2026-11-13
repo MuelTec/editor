@@ -47,6 +47,15 @@ body {
   margin-bottom: 28px;
 }
 
+.btn--back {
+  padding: 8px 12px;
+  margin-right: 12px;
+  font-size: 14px;
+  background: var(--surface-light);
+  border-radius: 8px;
+}
+.btn--back:hover { background: var(--surface-lighter); }
+
 .brand {
   display: flex;
   align-items: center;

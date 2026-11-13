@@ -39,7 +39,21 @@ import { VERTICAL_LAYOUT, layoutFor, type FrameLayout, type RatioId } from './fo
 
 // ---------------------------------------------------------------- modelos
 
-export type TransitionId = 'crossfade' | 'wipe' | 'flash';
+export type TransitionId =
+  | 'crossfade'
+  | 'wipe'
+  | 'flash'
+  | 'zoom'
+  | 'push';
+
+/** Rótulos das transições pra UI (Etapa 12). */
+export const TRANSITIONS: { id: TransitionId; label: string; hint: string }[] = [
+  { id: 'crossfade', label: 'Fusão', hint: 'Um clipe dissolve no outro' },
+  { id: 'wipe', label: 'Varredura', hint: 'O novo entra numa passada lateral' },
+  { id: 'flash', label: 'Flash', hint: 'Corte seco com luz branca' },
+  { id: 'zoom', label: 'Zoom', hint: 'O novo chega aproximando' },
+  { id: 'push', label: 'Empurrão', hint: 'O novo empurra o anterior' },
+];
 
 export interface MontageModel {
   id: string;
@@ -202,10 +216,34 @@ class ClipPlayer {
   private finished = false;
 
   constructor(
-    sink: CanvasSink,
+    private readonly sink: CanvasSink,
     startAt: number,
   ) {
     this.iterator = sink.canvases(Math.max(0, startAt));
+  }
+
+  /**
+   * Pula o leitor pra `localTime` (Etapa 12).
+   *
+   * O gerador só anda pra frente; quando o tempo SAI da janela do quadro
+   * atual (busca, loop da prévia, troca de clipe) a gente descarta o
+   * gerador e abre outro a partir do destino — o Mediabunny recua até o
+   * keyframe anterior sozinho. Sem isso, um salto de 10s tentava decodificar
+   * 300 quadros de uma vez e a timeline travava.
+   */
+  seek(localTime: number): void {
+    const t = Math.max(0, localTime);
+    const dentro = t >= Math.max(0, this.currentEnd - 0.25) && this.current !== null;
+    const perto = t <= this.currentEnd + 0.5;
+    if (dentro && perto) return; // tocou no quadro atual, não precisa mexer
+    if (!this.finished && t > this.currentEnd && t - this.currentEnd < 1.2) {
+      return; // avanço normal: deixa o gerador correr
+    }
+    this.iterator.return?.(undefined);
+    this.iterator = this.sink.canvases(t);
+    this.current = null;
+    this.currentEnd = Number.NEGATIVE_INFINITY;
+    this.finished = false;
   }
 
   /** Quadro cobrindo o tempo local `localTime` (segura o último se acabar). */
@@ -380,6 +418,28 @@ export class MontageRenderer {
   }
 
   /**
+   * Move os leitores de quadro pra posição `t` (Etapa 12).
+   *
+   * Chamado pela prévia quando o usuário arrasta a barra, quando o loop
+   * reinicia e quando um salto grande acontece: em vez de decodificar tudo
+   * que ficou pra trás, cada leitor reabre a partir do destino.
+   */
+  seek(t: number): void {
+    const { clips, total } = this.timeline;
+    const time = Math.min(Math.max(t, 0), Math.max(total - 0.001, 0));
+    for (let i = 0; i < this.players.length; i++) {
+      const clip = clips[i];
+      const fileTime =
+        time >= clip.start && time < clip.end
+          ? this.trims[i].trimStart + (time - clip.start)
+          : time < clip.start
+            ? this.trims[i].trimStart
+            : this.trims[i].trimEnd;
+      this.players[i].seek(fileTime);
+    }
+  }
+
+  /**
    * Janela de áudio global do clipe i: `[from, to]`.
    *
    * O áudio acompanha o corte VISUAL: em crossfade/wipe o clipe anterior acaba
@@ -446,6 +506,16 @@ export class MontageRenderer {
           w: this.layout.width * p,
           h: this.layout.height,
         };
+      } else if (this.transition === 'zoom') {
+        // O novo chega aproximando (1,16 → 1) e o anterior sai ampliando.
+        layers[1].alpha = p;
+        layers[1].transform = { scale: 1 + 0.16 * (1 - p) };
+        layers[0].transform = { scale: 1 + 0.08 * p };
+      } else if (this.transition === 'push') {
+        // Empurrão horizontal: um cobre exatamente o vão que o outro abre.
+        const w = this.layout.width;
+        layers[1].transform = { x: (1 - p) * w };
+        layers[0].transform = { x: -p * w };
       } else {
         // flash: corte seco no meio + luz branca no pico
         if (p < 0.5) layers.length = 1;
@@ -493,6 +563,12 @@ export interface AssembleMontageOptions {
   music?: File | null;
   /** Volume da música, 0..1 (padrão 0,7). */
   musicVolume?: number;
+  /**
+   * Por onde a música começa (Etapa 12): segundos dentro do arquivo — é a
+   * "timeline pra escolher o tempo da música". Com loop, depois do fim ela
+   * volta ao início do arquivo (0), não ao offset.
+   */
+  musicOffset?: number;
   onProgress?: (progress: number, label: string) => void;
 }
 
@@ -588,6 +664,7 @@ export async function assembleMontage(
           options.musicVolume ?? 0.7,
           warnings,
           options.onProgress,
+          options.musicOffset ?? 0,
         );
         await writeMixedBuffer(audioSource, mixed, options.onProgress);
       } else {
@@ -830,6 +907,7 @@ async function mixMontageAudio(
   musicVolume: number,
   warnings: string[],
   onProgress?: (progress: number, label: string) => void,
+  musicOffset = 0,
 ): Promise<AudioBuffer> {
   const total = renderer.timeline.total;
   const frames = Math.max(1, Math.ceil(total * MIX_RATE));
@@ -903,7 +981,13 @@ async function mixMontageAudio(
   } else {
     g.setValueAtTime(volume, 0);
   }
-  musicNode.start(0);
+  // Offset escolhido na timeline da música (Etapa 12): começa daí e, no
+  // loop, volta pro início do arquivo.
+  const offset = Math.min(
+    Math.max(0, musicOffset),
+    Math.max(0, music.duration - 0.05),
+  );
+  musicNode.start(0, offset);
 
   onProgress?.(0.945, 'Mixando a trilha sonora…');
   return await ctx.startRendering();
