@@ -824,7 +824,62 @@ export settings. O que trouxemos pro app (sem sair do processamento 100% local):
 - Legenda com tempo (aparecer/some em trechos) — precisaria de timeline
 - Google Fonts (com aviso de privacidade) pra ter mais fontes que as do sistema
 
-### Ideias de features novas (módulo vídeo)
+### 🚀 Etapa 11 — publicar "igual Minhas Finanças e Casinhas" (feito em 13/11/2026)
+
+**O que o Muel pediu:** o app publicado como os apps dele — repositório
+GitHub público, **APK** pra Android e **iOS público** pra testar.
+
+**Como os apps dele são:**
+- **Minhas Finanças** (HTML único + Capacitor): workflow `build-apk.yml`
+  (node 20 + java 17) → copia o html pra `www/` → `npx cap init/add android`
+  → `android_overlay/release_sign.js` materializa o keystore do secret
+  `ANDROID_KEYSTORE_B64` e injeta `signingConfigs.release` no `build.gradle`
+  → `./gradlew assembleRelease` → artifact. Site no GitHub Pages legado
+  (branch `main`). Keystore local em `Documents\keystore_minhasfinancas\`.
+- **Casinhas** (Expo): site no GitHub Pages + iOS via Safari →
+  Compartilhar → **Adicionar à Tela de Início** (sem App Store).
+
+**O que foi feito no editor:**
+| Item | Resultado |
+|---|---|
+| Repositório | `github.com/MuelTec/editor` — público, 17+ arquivos |
+| Site / "iOS público" | **https://mueltec.github.io/editor/** (branch `gh-pages`, build `built`) |
+| Ícones PWA | gerados por `scripts/gen-icons.mjs` (PNG puro via `zlib`, 0 dependências): 192/512/maskable/apple-touch 180 + mipmap Android 48→192 |
+| Manifest + metas iOS | `manifest.webmanifest`, `apple-touch-icon`, `apple-mobile-web-app-capable` → Safari "Adicionar à Tela de Início" |
+| `vite.config` | `base: './'` — **obrigatório** pra site de projeto (senão os assets apontam pra raiz e quebram) |
+| Keystore novo | `Documents\keystore_editor\editor.keystore` (alias `editor`, senha `Editor2026Muel`, 10.000 dias) — 4 secrets `ANDROID_KEYSTORE_*` **já no repo** |
+| APK | build local com Capacitor 6 + Gradle (`android_overlay/release_sign.js` reaproveitado) → publicado como **Release** |
+| CI | `.github/workflows/{build-apk,deploy-pages}.yml` prontos em **`ci/`** com `ci/README.md` de ativação |
+
+**🖐 Armadilha que travou tudo:** o token do `gh`/git tem escopo
+`repo, gist, read:org` — **sem `workflow` o git recusa qualquer push que
+toque em `.github/workflows/*.yml`** (e a API devolve 404 pro mesmo caminho).
+Como `gh auth refresh -s workflow` precisa de login no navegador (device
+flow expira em 15 min), os workflows foram movidos pra `ci/` e o
+`/.github/workflows/` foi pro `.gitignore` — assim o resto do push passa.
+Ativação futura: `gh auth refresh -s workflow` → copiar `ci/*.yml` pra
+`.github/workflows/` → push.
+
+**Outras armadilhas do caminho:**
+1. **`sdkmanager` no PowerShell**: `platforms;android-34` chega partido em
+   dois (o `;` vira separador) → chamar direto
+   `java -cp "cmdline-tools\latest\lib\*" com.android.sdklib.tool.sdkmanager.SdkManagerCli`.
+2. **Pages legado**: `POST /repos/.../pages` com
+   `source[branch]=gh-pages` + `source[path]=/` (o repo já nasce com Pages
+   "building", e a API devolve 409 se já existir → usar GET pra conferir).
+3. **Force push**: um teste pela API deixou um commit órfão no remoto e o
+   push passou a ser rejeitado (non-fast-forward) → `git push -f` (era
+   arquivo de teste meu, sem valor).
+4. **Ícone do play**: condição `lx >= ly && lx <= 1-ly` desenha triângulo
+   apontando **pra baixo**; pra direita é `|ly - 0.5| <= lx/2`.
+
+**Validação:**
+- Site: HTTP 200 em `/`, JS, CSS, manifest, ícones e SVG (todos 200);
+  console **0 erros**; UI carrega ("Estúdio", modo Vídeo único / Montagem).
+- APK: release assinado (`editor.keystore`) compilado com JDK 17 +
+  Android SDK 34 (platform-tools 37, build-tools 34.0.0).
+
+
 - [ ] Gravar → sair **2 arquivos** automaticamente (horizontal + vertical)
 - [ ] Versão vertical já sai **com legenda automática** no espaço do fundo borrado
 - [ ] Botão "modo YouTube" / "modo Stories" na gravação
