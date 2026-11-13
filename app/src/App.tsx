@@ -158,7 +158,6 @@ export default function App() {
   }, [musicUrl]);
 
   const model = MODELS.find((m) => m.id === modelId) ?? DEFAULT_MODEL;
-  const currentTransition = customTransition ?? model.transition;
 
   // Memoizado: sem isso viraria objeto novo a cada render (10×/s pela barra de
   // tempo) e o efeito de atualização da prévia rodaria sem parar.
