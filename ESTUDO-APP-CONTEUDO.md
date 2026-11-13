@@ -876,8 +876,34 @@ Ativação futura: `gh auth refresh -s workflow` → copiar `ci/*.yml` pra
 **Validação:**
 - Site: HTTP 200 em `/`, JS, CSS, manifest, ícones e SVG (todos 200);
   console **0 erros**; UI carrega ("Estúdio", modo Vídeo único / Montagem).
-- APK: release assinado (`editor.keystore`) compilado com JDK 17 +
-  Android SDK 34 (platform-tools 37, build-tools 34.0.0).
+- APK: **BUILD SUCCESSFUL em 7m27s** → `app-release.apk` **3,13 MB**,
+  verificado com `apksigner`: assinado `CN=MuelTec, O=MuelTec, C=BR`,
+  `com.mueltec.editor`, label "Editor de Video", minSdk 22 / targetSdk 34.
+  Publicado em **https://github.com/MuelTec/editor/releases/tag/v1.0**
+  (`editor-v1.0.apk`, 3.285.425 bytes).
+
+**Mais 4 armadilhas que só apareceram na hora de buildar o APK:**
+5. **Java 25 x Gradle 8.2.1** — o wrapper do Capacitor usa Gradle 8.2.1 e
+   ele morre com `Unsupported class file major version 69` (Java 25 = major
+   69). Solução: rodar com o **JDK 17**
+   (`C:\Program Files\Eclipse Adoptium\jdk-17.0.21.9-hotspot`) e limpar
+   `~/.gradle/caches/8.2.1\scripts` (o cache fica "envenenado" pela JVM
+   errada).
+6. **Caminho com acento mata o AGP** — `Your project path contains
+   non-ASCII characters` com a pasta `Projeto Padrão`. Buildar numa cópia
+   em caminho ASCII (`%TEMP%\opencode\editor-apk`) — copiar `www/`,
+   `android/`, `android_overlay/`, `node_modules/` e `capacitor.config.json`
+   (o `android/capacitor.settings.gradle` aponta pra `../node_modules`).
+7. **`signingConfig` no bloco errado** — um regex `release\s*\{...` casa o
+   **primeiro** `release {` do arquivo, que é o do `signingConfigs` recém
+   inserido → `Could not find method signingConfig()`. Corrigido em
+   `android_overlay/release_sign.js`: a busca parte do índice de
+   `buildTypes` antes de achar o `release`.
+8. **`.ps1` salvo em UTF-8 sem BOM** — o PowerShell 5.1 lê como ANSI e o
+   caminho acentuado vira lixo (`Projeto Padrǜo`). Salvar com BOM
+   (`UTF8Encoding $true`) ou escrever o script todo em ASCII.
+   Também: `;` em argumento do `sdkmanager` chega partido no cmd — chamar
+   `java -cp "...\lib\*" com.android.sdklib.tool.sdkmanager.SdkManagerCli`.
 
 
 - [ ] Gravar → sair **2 arquivos** automaticamente (horizontal + vertical)
