@@ -3,6 +3,14 @@ node_modules/
 dist/
 *.local
 
+# Artefatos do build Android/Capacitor (gerados no CI)
+/www/
+/android/
+/package.json
+/package-lock.json
+/capacitor.config.json
+/android_assets/
+
 # Outros projetos desta pasta (não fazem parte do "editor")
 /a/
 /CasinhasApp/

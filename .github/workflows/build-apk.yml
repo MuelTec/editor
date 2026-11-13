@@ -1,0 +1,59 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build web (Vite)
+        run: cd app && npm ci && npm run build
+
+      - name: Preparar projeto Android (Capacitor)
+        run: |
+          mkdir -p www && cp -r app/dist/. www/
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npx cap init "Editor de Video" com.mueltec.editor --web-dir www
+          npx cap add android
+
+      - name: Adicionar icones ao Android
+        run: |
+          for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+            dpi="${d%%:*}"
+            mkdir -p "android/app/src/main/res/mipmap-$dpi"
+            cp "app/public/icons/android-$dpi.png" "android/app/src/main/res/mipmap-$dpi/ic_launcher.png"
+          done
+
+      - name: Sincronizar Android
+        run: npx cap sync android
+
+      - name: Assinar release (keystore dos secrets)
+        run: node android_overlay/release_sign.js
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+
+      - name: Gradle assembleRelease
+        run: cd android && chmod +x gradlew && ./gradlew assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
