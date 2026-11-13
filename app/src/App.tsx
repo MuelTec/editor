@@ -19,8 +19,7 @@ import {
   type Adjustments,
   type FilterId,
 } from './lib/filters';
-import { analyzeMusic, beatsInTimeline, snapCutsToBeats, type MusicAnalysis } from './lib/beats';
-import { DEFAULT_MODEL, MODELS, TRANSITIONS, assembleMontage, probeClip, type MontageClip, type TransitionId } from './lib/montage';
+import { DEFAULT_MODEL, MODELS, assembleMontage, probeClip, type MontageClip } from './lib/montage';
 import {
   PREVIEW_HEIGHT,
   PREVIEW_WIDTH,
@@ -109,8 +108,7 @@ export default function App() {
 
   // ---- montagem (Etapa 6)
   const [clips, setClips] = useState<ClipInfo[]>([]);
-  const [customTransition, setCustomTransition] = useState<TransitionId | null>(null);
-
+  const [modelId, setModelId] = useState(DEFAULT_MODEL.id);
   const [trimmingId, setTrimmingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [montageTime, setMontageTime] = useState(0);
@@ -120,8 +118,6 @@ export default function App() {
   // ---- trilha sonora (Etapa 8)
   const [music, setMusic] = useState<File | null>(null);
   const [musicVolume, setMusicVolume] = useState(0.7);
-  const [musicOffset, setMusicOffset] = useState(0); // Etapa 12
-  const [musicAnalysis, setMusicAnalysis] = useState<MusicAnalysis | null>(null); // Etapa 12
 
   const inputRef = useRef<HTMLInputElement>(null);
   const addInputRef = useRef<HTMLInputElement>(null);
@@ -134,19 +130,7 @@ export default function App() {
   const montagePreviewRef = useRef<MontagePreview | null>(null);
   const timeTickRef = useRef(0);
 
-  // Analisa a música quando o arquivo é escolhido.
-  useEffect(() => {
-    if (!music) {
-      setMusicAnalysis(null);
-      setMusicOffset(0);
-      return;
-    }
-    void (async () => {
-      const res = await analyzeMusic(music);
-      setMusicAnalysis(res);
-    })();
-  }, [music]);
-
+  // URL da música pra prévia (recriada só quando o arquivo muda).
   const musicUrl = useMemo(
     () => (music ? URL.createObjectURL(music) : null),
     [music],
@@ -158,7 +142,6 @@ export default function App() {
   }, [musicUrl]);
 
   const model = MODELS.find((m) => m.id === modelId) ?? DEFAULT_MODEL;
-
   // Memoizado: sem isso viraria objeto novo a cada render (10×/s pela barra de
   // tempo) e o efeito de atualização da prévia rodaria sem parar.
   const montageCaption = useMemo(
@@ -244,7 +227,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       api = startMontagePreview(canvas, {
         clips: toMontageClips(clips),
-        transition: currentTransition,
+        transition: model.transition,
         transitionDuration: model.transitionDuration,
         filter: model.filter,
         caption: montageCaption,
@@ -297,14 +280,14 @@ export default function App() {
     const api = montagePreviewRef.current;
     if (!api) return;
     void api.update({
-      transition: currentTransition,
+      transition: model.transition,
       transitionDuration: model.transitionDuration,
       filter: model.filter,
       caption: montageCaption,
       adjust,
       guides: true,
     });
-  }, [model, montageCaption, adjust, currentTransition]);
+  }, [model, montageCaption, adjust]);
 
   // Sincroniza o <audio> da prévia: fonte, volume e play/pause.
   // Um efeito só porque o elemento monta DEPOIS (só existe com clipes na
@@ -353,9 +336,9 @@ export default function App() {
     setMontageTime(time);
     const audio = musicAudioRef.current;
     if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
-      audio.currentTime = (time + musicOffset) % audio.duration;
+      audio.currentTime = time % audio.duration;
     }
-  }, [musicOffset]);
+  }, []);
 
   const reset = useCallback(() => {
     setPhase('idle');
@@ -1450,57 +1433,22 @@ export default function App() {
                   </>
                 )}
               </div>
-              {music && musicAnalysis && (
-                <div className="music-waveform">
-                  <div className="waveform-canvas">
-                    {musicAnalysis.peaks.map((p, i) => (
-                      <div
-                        key={i}
-                        className="waveform-bar"
-                        style={{ height: `${Math.max(2, p * 100)}%` }}
-                      />
-                    ))}
-                  </div>
-                  <label className="field field--wide">
-                    <span>Início da música: {musicOffset.toFixed(1)}s</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={Math.max(0, musicAnalysis.duration - 0.5)}
-                      step={0.1}
-                      value={musicOffset}
-                      onChange={(e) => setMusicOffset(Number(e.target.value))}
-                    />
-                  </label>
-                  <button
-                    className="btn btn--tiny"
-                    onClick={() => {
-                      const snapped = snapCutsToBeats(
-                        clips.map((c) => ({
-                          trimStart: c.trimStart,
-                          trimEnd: c.trimEnd,
-                          duration: c.duration,
-                        })),
-                        musicAnalysis.beats,
-                        musicAnalysis.duration,
-                        musicOffset,
-                        model.transitionDuration,
-                        montageDuration,
-                      );
-                      if (snapped) {
-                        setClips((prev) =>
-                          prev.map((c, i) => ({ ...c, trimStart: snapped[i].trimStart, trimEnd: snapped[i].trimEnd })),
-                        );
-                      } else {
-                        setNotice('Nenhuma batida encontrada perto dos cortes.');
-                      }
-                    }}
-                  >
-                    ⚡ Sincronizar cortes com batidas
-                  </button>
-                </div>
+              {music && (
+                <label className="field field--wide">
+                  <span>
+                    Volume da música — {Math.round(musicVolume * 100)}%
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={musicVolume}
+                    onChange={(e) => setMusicVolume(Number(e.target.value))}
+                    aria-label="Volume da música"
+                  />
+                </label>
               )}
-              {music && !musicAnalysis && <p className="form-hint">Analisando batidas...</p>}
               <p className="form-hint">
                 A música entra <strong>por cima</strong> do áudio dos clipes, com
                 loop automático se for mais curta que a montagem e volume que
