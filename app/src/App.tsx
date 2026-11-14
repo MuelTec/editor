@@ -25,6 +25,7 @@ import {
   MODELS,
   TRANSITIONS,
   assembleMontage,
+  buildTimeline,
   probeClip,
   type MontageClip,
   type TransitionId,
@@ -106,6 +107,17 @@ const formatDuration = (seconds: number): string => {
 const formatTrim = (seconds: number): string =>
   `${Math.max(0, seconds).toFixed(1).replace('.', ',')}s`;
 
+/**
+ * Passos da régua em segundos, do mais fino ao mais grosso (Etapa 13):
+ * o passo escolhido é o primeiro cujo `passo × 10` cobre a janela visível
+ * (≈10 marcações na tela), independentemente do zoom.
+ */
+const RULER_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800];
+
+/** Rótulo da régua adaptado ao passo (0,5s · 12s · 2:30). */
+const formatTick = (seconds: number, step: number): string =>
+  step < 1 ? `${seconds.toFixed(1).replace('.', ',')}s` : formatDuration(seconds);
+
 export default function App() {
   // ------------------------------------------------------------ projeto
   const [phase, setPhase] = useState<Phase>('idle');
@@ -148,6 +160,13 @@ export default function App() {
   const [montageDuration, setMontageDuration] = useState(0);
   const [montagePlaying, setMontagePlaying] = useState(true);
 
+  // ------------------------------------------- zoom da linha do tempo
+  // Só a LINHA dá zoom (Etapa 13) — o app inteiro fica na mesma escala.
+  /** 1 = linha inteira; 4 = 25% da duração visível. */
+  const [zoom, setZoom] = useState(1);
+  /** Instante (s) visível no início da linha quando há zoom. */
+  const [viewStart, setViewStart] = useState(0);
+
   // ------------------------------------------------------------ música
   const [music, setMusic] = useState<File | null>(null);
   const [musicVolume, setMusicVolume] = useState(0.7);
@@ -171,6 +190,16 @@ export default function App() {
   const timeTickRef = useRef(0);
   const musicOffsetRef = useRef(0);
   const musicDraggingRef = useRef(false);
+  /**
+   * Espelho de `montagePlaying` em ref: a prévia é recriada por um efeito
+   * que não pode depender do estado (senão reabriria os arquivos a cada
+   * play/pause) — sem isso ela voltava TOCANDO com a UI mostrando ▶ (Etapa 13).
+   */
+  const montagePlayingRef = useRef(true);
+  /** Ponto de partida do pan da música (cliente X + offset inicial). */
+  const musicDragStartRef = useRef<{ x: number; offset: number } | null>(null);
+  /** Contêiner da linha do tempo (zoom/pan por scroll — Etapa 13). */
+  const tlTracksRef = useRef<HTMLDivElement>(null);
 
   // Analisa a música quando o arquivo é escolhido.
   useEffect(() => {
@@ -274,6 +303,7 @@ export default function App() {
         true,
         filter,
         adjust,
+        true, // fast (Etapa 13)
       );
       void v
         .play()
@@ -319,6 +349,8 @@ export default function App() {
         caption: montageCaption,
         adjust,
         guides: true,
+        // Etapa 13: prévia no caminho reduzido do blur (não trava tablets).
+        fast: true,
         onTime: (t, d) => {
           // Trilha alinhada com a prévia (busca, loop e troca de clipe).
           const audio = musicAudioRef.current;
@@ -335,11 +367,13 @@ export default function App() {
               audio.currentTime = expected;
             }
           }
-          // Atualiza a barra no máx. 10×/s pra não repintar a UI a 60fps.
+          // A duração é idempotente (mesmo valor = sem re-render) e precisa
+          // chegar mesmo com a prévia pausada — aí o onTime é a única via.
+          setMontageDuration(d);
+          // Atualiza o tempo no máx. 10×/s pra não repintar a UI a 60fps.
           if (Math.abs(t - timeTickRef.current) >= 0.1) {
             timeTickRef.current = t;
             setMontageTime(t);
-            setMontageDuration(d);
           } else if (t === 0 && timeTickRef.current !== 0) {
             timeTickRef.current = 0;
             setMontageTime(0);
@@ -347,6 +381,9 @@ export default function App() {
         },
       });
       montagePreviewRef.current = api;
+      // Respeita o play/pause atual: sem isso a prévia recriada voltava
+      // tocando mesmo com a UI em ▶ (dessincronia — Etapa 13).
+      api.setPaused(!montagePlayingRef.current);
       setMontageTime(0);
       setMontageDuration(api.duration);
     }, 300);
@@ -398,9 +435,54 @@ export default function App() {
     }
   }, [musicUrl, musicVolume, montagePlaying, phase, mode, clips]);
 
+  // --------------------------------------------- escala da linha do tempo
+  // Tudo na linha usa a MESMA janela [viewStart, viewStart + viewSpan]
+  // (Etapa 13): régua, clipes, batidas, playhead e a onda da música.
+  const videoTotal = mode === 'montage' ? montageDuration : (info?.duration ?? 0);
+  const videoCurrent = mode === 'montage' ? montageTime : singleTime;
+  const viewSpan = videoTotal > 0 ? videoTotal / Math.max(1, zoom) : 0;
+  const viewStartClamped =
+    viewSpan >= videoTotal || viewSpan <= 0
+      ? 0
+      : Math.min(Math.max(0, viewStart), Math.max(0, videoTotal - viewSpan));
+
+  /** Tempo (s) → % horizontal dentro da janela visível (0–100). */
+  const posPct = (t: number): number =>
+    viewSpan > 0
+      ? Math.min(100, Math.max(0, ((t - viewStartClamped) / viewSpan) * 100))
+      : 0;
+
+  // Régua: passo adaptativo ao ZOOM (não à duração total).
+  const rulerStep = viewSpan > 0 ? RULER_STEPS.find((s) => s * 10 >= viewSpan) ?? 1800 : 1;
+  const rulerTicks: number[] = [];
+  if (viewSpan > 0) {
+    const end = viewStartClamped + viewSpan;
+    for (
+      let t = Math.ceil(viewStartClamped / rulerStep) * rulerStep;
+      t <= end + 1e-6;
+      t += rulerStep
+    ) {
+      rulerTicks.push(Math.round(t * 1000) / 1000);
+    }
+  }
+
+  // Posição REAL dos clipes — com a sobreposição das transições, do jeito
+  // que o motor monta (Etapa 13: antes cada clipe só tinha % da largura).
+  const montageTimeline = useMemo(
+    () =>
+      mode === 'montage' && clips.length > 0
+        ? buildTimeline(
+            clips.map((c) => Math.max(0.1, c.trimEnd - c.trimStart)),
+            currentTransitionDuration,
+          )
+        : null,
+    [mode, clips, currentTransitionDuration],
+  );
+
   // ------------------------------------------------------- forma de onda
-  // Desenha a faixa de música: onda + BATIDAS destacadas + handle do
-  // início + playhead sincronizado com a montagem.
+  // Desenha a faixa de música NA ESCALA DA LINHA (Etapa 13): a janela
+  // visível [viewStart, viewStart+viewSpan] é mapeada pra música com loop
+  // ((offset + t) % dur) — onda, batidas e playhead acompanham o zoom.
   useEffect(() => {
     const canvas = musicCanvasRef.current;
     if (!canvas) return;
@@ -437,64 +519,126 @@ export default function App() {
 
       const dur = Math.max(0.1, musicAnalysis.duration);
       const offset = Math.min(Math.max(0, musicOffset), Math.max(0, dur - 0.05));
+      const span = Math.max(0.1, viewSpan || dur);
+      const vs = viewStartClamped;
+      const cycles = Math.ceil(span / dur) + 1;
+      /** Tempo da linha (s) → posição na música (com loop). */
+      const musicAt = (t: number): number => (offset + t) % dur;
 
-      // 1) Forma de onda
+      // 1) Forma de onda na escala da JANELA (1 barra ≈ 3px) — com zoom a
+      //    onda se abre junto com a linha, em vez de 829 batidas espremidas.
       const peaks = musicAnalysis.peaks;
-      const bars = Math.min(peaks.length, Math.floor(w / 3));
-      const barW = w / bars;
+      const barW = 3;
+      const bars = Math.max(1, Math.floor(w / barW));
       ctx.fillStyle = '#26b9ff';
       ctx.globalAlpha = 0.65;
       for (let i = 0; i < bars; i++) {
-        const p = peaks[Math.floor((i / bars) * peaks.length)] ?? 0;
+        const mt = musicAt(vs + (i / bars) * span);
+        const p =
+          peaks[Math.min(peaks.length - 1, Math.floor((mt / dur) * peaks.length))] ?? 0;
         const bh = Math.max(2, p * (h - 16));
         ctx.fillRect(i * barW, (h - bh) / 2, Math.max(1, barW - 1), bh);
       }
       ctx.globalAlpha = 1;
 
-      // 2) Região ignorada (antes do início escolhido) escurecida
+      // 2) Trecho PULADO da música (antes do offset): entra depois do fim
+      //    do loop — (t % dur) ∈ [dur − offset, dur).
       if (offset > 0.02) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
-        ctx.fillRect(0, 0, (offset / dur) * w, h);
-        ctx.fillStyle = '#969696';
+        const firstCycle = Math.floor(vs / dur);
         ctx.font = '10px system-ui, sans-serif';
         ctx.textAlign = 'left';
-        ctx.fillText('pulado', 6, 12);
+        for (let k = firstCycle; k <= firstCycle + cycles; k++) {
+          const t0 = k * dur + (dur - offset);
+          const t1 = t0 + offset;
+          if (t0 > vs + span) break;
+          if (t1 <= vs) continue;
+          const x0 = Math.max(0, ((Math.max(t0, vs) - vs) / span) * w);
+          const x1 = Math.min(w, ((Math.min(t1, vs + span) - vs) / span) * w);
+          if (x1 <= x0) continue;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
+          ctx.fillRect(x0, 0, x1 - x0, h);
+          ctx.fillStyle = '#969696';
+          ctx.fillText('pulado', x0 + 4, 12);
+        }
       }
 
-      // 3) BATIDAS destacadas
-      const beats = musicAnalysis.beats;
+      // 3) BATIDAS da música já convertidas pro TEMPO DA LINHA — só as
+      //    visíveis, na escala da janela (no zoom elas se abrem).
+      //    Denso (espaço < 12px) → só a linha; aberto → linha + pontinho.
+      const visible = timelineBeats.filter((b) => b >= vs && b <= vs + span);
+      const showDots = visible.length > 0 && visible.length <= w / 12;
       ctx.fillStyle = '#ff4d6d';
-      for (const b of beats) {
-        const x = (b / dur) * w;
+      for (const b of visible) {
+        const x = ((b - vs) / span) * w;
         ctx.fillRect(x, 4, 1.5, h - 8);
-        // pontinho no topo pra destacar mais
-        ctx.fillRect(x - 2, 4, 5.5, 4);
+        if (showDots) ctx.fillRect(x - 2, 4, 5.5, 4); // pontinho no topo
       }
 
-      // 4) Handle do início da música
-      const hx = (offset / dur) * w;
+      // 4) Início da música (posição 0 do arquivo) — marcador BRANCO.
+      const musicZero = (dur - offset) % dur; // primeiro t em que a música está em 0
+      const firstZero = Math.max(0, Math.ceil((vs - musicZero) / dur));
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(hx - 1, 0, 2, h);
-      ctx.beginPath();
-      ctx.moveTo(hx - 6, 0);
-      ctx.lineTo(hx + 6, 0);
-      ctx.lineTo(hx, 9);
-      ctx.closePath();
-      ctx.fill();
+      for (let k = firstZero; k <= firstZero + cycles; k++) {
+        const t = musicZero + k * dur;
+        if (t > vs + span) break;
+        if (t < vs) continue;
+        const x = ((t - vs) / span) * w;
+        ctx.fillRect(x - 1, 0, 2, h);
+        ctx.fillRect(x - 5, 0, 10, 3);
+      }
 
-      // 5) Playhead da montagem (posição dentro da música, com loop)
-      if (montageDuration > 0) {
-        const inMusic = (montageTime + offset) % dur;
-        const px = (inMusic / dur) * w;
-        ctx.fillStyle = '#ffd400';
-        ctx.fillRect(px - 1, 0, 2, h);
+      // 5) Playhead da linha (amarelo) — MESMO x do playhead branco.
+      if (videoTotal > 0) {
+        const t = Math.min(Math.max(0, videoCurrent), videoTotal);
+        if (t >= vs && t <= vs + span) {
+          const x = ((t - vs) / span) * w;
+          ctx.fillStyle = '#ffd400';
+          ctx.fillRect(x - 1, 0, 2, h);
+          ctx.fillRect(x - 5, h - 3, 10, 3);
+        }
       }
     };
 
     draw();
     window.addEventListener('resize', draw);
     return () => window.removeEventListener('resize', draw);
-  }, [musicAnalysis, musicOffset, montageDuration, montageTime, music]);
+  }, [
+    musicAnalysis,
+    musicOffset,
+    timelineBeats,
+    videoCurrent,
+    videoTotal,
+    viewSpan,
+    viewStartClamped,
+    music,
+  ]);
+
+  // Auto-follow do playhead (Etapa 13): só enquanto TOCA e com zoom, mantém
+  // o tempo visível na janela com folga — parado, a linha não anda sozinha.
+  useEffect(() => {
+    if (phase !== 'ready' || videoTotal <= 0 || zoom <= 1 || viewSpan <= 0) return;
+    const playingNow = mode === 'montage' ? montagePlaying : playing;
+    if (!playingNow) return;
+    const margin = viewSpan * 0.12;
+    const t = videoCurrent;
+    const vs = viewStartClamped;
+    if (t >= vs + margin && t <= vs + viewSpan - margin) return;
+    const target =
+      t < vs + margin ? t - margin : t - viewSpan + margin;
+    setViewStart(
+      Math.min(Math.max(0, target), Math.max(0, videoTotal - viewSpan)),
+    );
+  }, [
+    phase,
+    mode,
+    montagePlaying,
+    playing,
+    videoCurrent,
+    videoTotal,
+    viewSpan,
+    viewStartClamped,
+    zoom,
+  ]);
 
   // ---------------------------------------------------------- controles
   const togglePlay = useCallback(() => {
@@ -513,6 +657,7 @@ export default function App() {
     if (!api) return;
     const next = !montagePlaying;
     api.setPaused(!next);
+    montagePlayingRef.current = next;
     setMontagePlaying(next);
   }, [montagePlaying]);
 
@@ -554,6 +699,9 @@ export default function App() {
     setMontageTime(0);
     setMontageDuration(0);
     setMontagePlaying(true);
+    montagePlayingRef.current = true;
+    setZoom(1);
+    setViewStart(0);
     setSingleTime(0);
     setPlaying(false);
     setLibTab('midia');
@@ -952,51 +1100,105 @@ export default function App() {
     [addClips, mode, pickFile],
   );
 
-  /** Clica/arrasta na régua ou na trilha de vídeo → navega no tempo. */
+  /** Clica/arrasta na régua ou na trilha → navega no tempo da JANELA visível. */
   const seekFromEvent = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>, total: number) => {
-      if (total <= 0) return;
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (videoTotal <= 0 || viewSpan <= 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
       const p = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      const t = p * total;
+      const t = viewStartClamped + p * viewSpan;
       if (mode === 'montage') seekMontage(t);
       else seekSingle(t);
     },
-    [mode, seekMontage, seekSingle],
+    [mode, seekMontage, seekSingle, viewStartClamped, viewSpan, videoTotal],
   );
 
-  /** Arrasta o handle do início da música na forma de onda. */
-  const offsetFromEvent = useCallback(
+  /**
+   * Arrasta a forma de onda = move a MÚSICA sob a linha do tempo (Etapa 13).
+   * Na escala da janela: 1px = viewSpan/largura segundos, e arrastar pra
+   * direita leva o conteúdo junto (offset diminui).
+   */
+  const startMusicDrag = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       if (!musicAnalysis) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const p = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      const dur = musicAnalysis.duration;
-      setMusicOffset(Math.min(Math.max(0, p * dur), Math.max(0, dur - 0.5)));
+      musicDragStartRef.current = { x: e.clientX, offset: musicOffset };
+      // Ponteiro sintético/não-ativo pode lançar — o arrasto funciona mesmo.
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignora */
+      }
     },
-    [musicAnalysis],
+    [musicAnalysis, musicOffset],
   );
+
+  const moveMusicDrag = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const start = musicDragStartRef.current;
+      if (!start || !musicAnalysis) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const span = Math.max(0.1, viewSpan || musicAnalysis.duration);
+      const dxSec = ((e.clientX - start.x) / Math.max(1, rect.width)) * span;
+      const dur = musicAnalysis.duration;
+      setMusicOffset(
+        Math.min(Math.max(0, start.offset - dxSec), Math.max(0, dur - 0.5)),
+      );
+    },
+    [musicAnalysis, viewSpan],
+  );
+
+  /** Zoom da linha no centro (ou num tempo âncora, tipo o cursor do mouse). */
+  const zoomBy = useCallback(
+    (factor: number, anchorTime?: number) => {
+      if (videoTotal <= 0) return;
+      const zMin = 1;
+      const zMax = Math.max(1, videoTotal / 0.5); // no mínimo 0,5s visíveis
+      const next = Math.min(zMax, Math.max(zMin, zoom * factor));
+      const span = videoTotal / zoom;
+      const anchor = anchorTime ?? viewStartClamped + span / 2;
+      const rel = span > 0 ? (anchor - viewStartClamped) / span : 0.5;
+      const nextSpan = videoTotal / next;
+      if (next !== zoom) setZoom(next);
+      setViewStart(Math.max(0, anchor - rel * nextSpan));
+    },
+    [videoTotal, zoom, viewStartClamped],
+  );
+
+  /** Volta pra linha inteira. */
+  const fitView = useCallback(() => {
+    setZoom(1);
+    setViewStart(0);
+  }, []);
 
   const working = phase === 'working';
   const montageReady = phase === 'ready' && mode === 'montage';
   const singleReady = phase === 'ready' && mode === 'single' && !!file;
 
-  // Tempos da timeline
-  const videoTotal = mode === 'montage' ? montageDuration : (info?.duration ?? 0);
-  const videoCurrent = mode === 'montage' ? montageTime : singleTime;
-  const playheadPct =
-    videoTotal > 0 ? Math.min(100, (videoCurrent / videoTotal) * 100) : 0;
-
-  // Régua: passo adaptativo
-  const rulerStep =
-    videoTotal > 120 ? 15 : videoTotal > 60 ? 10 : videoTotal > 20 ? 5 : 1;
-  const rulerTicks: number[] = [];
-  for (let t = 0; t <= videoTotal + 0.001; t += rulerStep) rulerTicks.push(t);
-
-  const totalClipDuration = clips.reduce(
-    (s, c) => s + Math.max(0.1, c.trimEnd - c.trimStart),
-    0,
-  );
+  // Zoom/pan da linha pelo scroll (Etapa 13): Ctrl+role = zoom NO CURSOR,
+  // role = pan. `passive:false` porque o preventDefault trava o scroll da
+  // página enquanto o ponteiro está sobre a linha do tempo.
+  useEffect(() => {
+    const el = tlTracksRef.current;
+    if (!el || videoTotal <= 0) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const span = videoTotal / zoom;
+      if (e.ctrlKey || e.metaKey) {
+        const p = Math.min(1, Math.max(0, (e.clientX - rect.left) / width));
+        zoomBy(e.deltaY > 0 ? 1 / 1.2 : 1.2, viewStartClamped + p * span);
+      } else {
+        const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        const secPerPx = span / width;
+        setViewStart((vs) =>
+          Math.min(Math.max(0, videoTotal - span), Math.max(0, vs + d * secPerPx)),
+        );
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [videoTotal, zoom, viewStartClamped, zoomBy]);
 
   const exportDisabled =
     working || phase === 'idle' || phase === 'error' || (mode === 'montage' && clips.length === 0);
@@ -1387,7 +1589,7 @@ export default function App() {
               <input
                 ref={musicInputRef}
                 type="file"
-                accept="audio/*"
+                accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac,.mpeg"
                 hidden
                 onChange={(e) => {
                   const picked = e.target.files?.[0] ?? null;
@@ -1449,8 +1651,9 @@ export default function App() {
                     />
                   </label>
                   <p className="form-hint">
-                    Ou arraste o <strong>handle branco</strong> direto na forma de
-                    onda da timeline (embaixo). Tudo antes dele é pulado.
+                    Ou <strong>arraste a onda</strong> na timeline (embaixo) para
+                    mover a música sob a linha. O marcador branco é o começo da
+                    trilha; tudo antes dele é pulado.
                   </p>
 
                   {mode === 'montage' && (
@@ -2041,51 +2244,77 @@ export default function App() {
             </>
           )}
 
+          {/* Zoom da linha do tempo (Etapa 13): só a linha dá zoom */}
+          <span className="tl-zoom">
+            <button
+              className="btn btn--tiny"
+              onClick={() => zoomBy(1 / 1.4)}
+              disabled={videoTotal <= 0 || zoom <= 1}
+              title="Diminuir zoom (Ctrl+role na linha)"
+            >
+              −
+            </button>
+            <span className="tl-zoom-label">{Math.round(zoom * 100)}%</span>
+            <button
+              className="btn btn--tiny"
+              onClick={() => zoomBy(1.4)}
+              disabled={videoTotal <= 0 || zoom >= videoTotal / 0.5 - 0.001}
+              title="Aumentar zoom (Ctrl+role na linha)"
+            >
+              +
+            </button>
+            <button
+              className="btn btn--tiny"
+              onClick={fitView}
+              disabled={videoTotal <= 0 || zoom <= 1}
+              title="Ver a linha do tempo inteira"
+            >
+              Ajustar
+            </button>
+          </span>
+
           <span className="tl-hint">
             {mode === 'montage'
-              ? 'clique na régua para navegar · arraste o handle na música para escolher o início'
-              : 'clique na régua para navegar'}
+              ? 'clique na régua para navegar · Ctrl+role = zoom só na linha · arraste a onda para ajustar a música'
+              : 'clique na régua para navegar · Ctrl+role = zoom só na linha'}
           </span>
         </div>
 
-        <div className="timeline-tracks">
-          {/* Régua + trilha de vídeo (mesma escala) */}
-          <div
-            className="tl-stack"
-            onClick={(e) => seekFromEvent(e, videoTotal)}
-            role="presentation"
-          >
+        <div className="timeline-tracks" ref={tlTracksRef}>
+          {/* Régua + trilha de vídeo (mesma escala/janela visível) */}
+          <div className="tl-stack" onClick={seekFromEvent} role="presentation">
             <div className="tl-ruler">
               {rulerTicks.map((t) => (
-                <span key={t} className="tl-tick" style={{ left: `${videoTotal > 0 ? (t / videoTotal) * 100 : 0}%` }}>
+                <span key={t} className="tl-tick" style={{ left: `${posPct(t)}%` }}>
                   <i />
-                  {formatDuration(t)}
+                  {formatTick(t, rulerStep)}
                 </span>
               ))}
             </div>
 
             <div className="tl-track tl-track--video">
-              {mode === 'montage' && clips.length > 0 ? (
+              {mode === 'montage' && clips.length > 0 && montageTimeline ? (
                 clips.map((c, i) => {
-                  const w =
-                    (Math.max(0.1, c.trimEnd - c.trimStart) /
-                      Math.max(0.1, totalClipDuration)) *
-                    100;
+                  const seg = montageTimeline.clips[i];
+                  // Fora da janela visível → fora do DOM (linhas com zoom).
+                  if (
+                    !seg ||
+                    seg.end < viewStartClamped ||
+                    seg.start > viewStartClamped + viewSpan
+                  ) {
+                    return null;
+                  }
+                  const left = posPct(seg.start);
+                  const width = Math.max(1, posPct(seg.end) - left);
                   return (
                     <div
                       key={c.id}
                       className="tl-clip"
-                      style={{ width: `${w}%` }}
+                      style={{ left: `${left}%`, width: `${width}%` }}
                       title={`${i + 1}. ${c.name} — ${formatDuration(c.trimEnd - c.trimStart)}`}
                     >
                       <span className="tl-clip-idx">{i + 1}</span>
                       <span className="tl-clip-name">{c.name}</span>
-                      {i < clips.length - 1 && (
-                        <span
-                          className="tl-clip-transition"
-                          title={TRANSITIONS.find((t) => t.id === currentTransition)?.label}
-                        />
-                      )}
                     </div>
                   );
                 })
@@ -2093,8 +2322,8 @@ export default function App() {
                 <div
                   className="tl-clip tl-clip--single"
                   style={{
-                    width: `${Math.max(2, playheadPct)}%`,
-                    maxWidth: '100%',
+                    left: `${posPct(0)}%`,
+                    width: `${Math.max(1, posPct(videoTotal) - posPct(0))}%`,
                   }}
                   title={info.name}
                 >
@@ -2108,22 +2337,45 @@ export default function App() {
                 </span>
               )}
 
-              {/* Batidas da música destacadas na trilha (Etapa 12) */}
-              {mode === 'montage' &&
-                timelineBeats.map((t, i) => (
+              {/* Marcadores de transição = sobreposição REAL dos clipes */}
+              {montageTimeline?.transitions.map((td, i) => {
+                if (td <= 0.01) return null;
+                const seg = montageTimeline.clips[i];
+                if (!seg) return null;
+                const t1 = seg.end;
+                const t0 = t1 - td;
+                if (t1 < viewStartClamped || t0 > viewStartClamped + viewSpan) return null;
+                const left = posPct(t0);
+                const width = Math.max(1, posPct(t1) - left);
+                return (
                   <span
-                    key={`beat-${i}`}
-                    className="tl-beat"
-                    style={{ left: `${(t / Math.max(0.1, montageDuration)) * 100}%` }}
-                    title={`Batida em ${formatDuration(t)}`}
+                    key={`tr-${i}`}
+                    className="tl-clip-transition"
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                    title={TRANSITIONS.find((t) => t.id === currentTransition)?.label}
                   />
-                ))}
+                );
+              })}
+
+              {/* Batidas da música destacadas — só as visíveis na janela */}
+              {mode === 'montage' &&
+                timelineBeats
+                  .filter((t) => t >= viewStartClamped && t <= viewStartClamped + viewSpan)
+                  .map((t) => (
+                    <span
+                      key={`beat-${t}`}
+                      className="tl-beat"
+                      style={{ left: `${posPct(t)}%` }}
+                      title={`Batida em ${formatDuration(t)}`}
+                    />
+                  ))}
             </div>
 
-            <div className="tl-playhead" style={{ left: `${playheadPct}%` }} />
+            <div className="tl-playhead" style={{ left: `${posPct(videoCurrent)}%` }} />
           </div>
 
-          {/* Trilha de música: forma de onda + batidas + handle do início */}
+          {/* Trilha de música: onda + batidas NA ESCALA DA JANELA.
+              Arrastar = move a música por baixo da linha (Etapa 13). */}
           <div className="tl-track tl-track--music">
             <canvas
               ref={musicCanvasRef}
@@ -2131,11 +2383,10 @@ export default function App() {
               onPointerDown={(e) => {
                 if (!musicAnalysis) return;
                 musicDraggingRef.current = true;
-                e.currentTarget.setPointerCapture(e.pointerId);
-                offsetFromEvent(e);
+                startMusicDrag(e);
               }}
               onPointerMove={(e) => {
-                if (musicDraggingRef.current) offsetFromEvent(e);
+                if (musicDraggingRef.current) moveMusicDrag(e);
               }}
               onPointerUp={() => {
                 musicDraggingRef.current = false;
@@ -2143,7 +2394,7 @@ export default function App() {
               onPointerCancel={() => {
                 musicDraggingRef.current = false;
               }}
-              style={{ cursor: musicAnalysis ? 'ew-resize' : 'default' }}
+              style={{ cursor: musicAnalysis ? 'grab' : 'default' }}
             />
           </div>
         </div>

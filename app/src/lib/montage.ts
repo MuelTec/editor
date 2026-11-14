@@ -293,6 +293,8 @@ export interface MontageRendererOptions {
   startTime?: number;
   /** Geometria do quadro de saída (Etapa 9): 9:16 por padrão, 16:9 opcional. */
   layout?: FrameLayout;
+  /** Prévia: caminho reduzido do blur (leve em tablets — Etapa 13). */
+  fast?: boolean;
 }
 
 /**
@@ -314,6 +316,7 @@ export class MontageRenderer {
   private composer: FrameComposer;
   private transition: TransitionId;
   private adjust: Adjustments;
+  private readonly fast: boolean;
   private disposed = false;
 
   private constructor(
@@ -332,11 +335,13 @@ export class MontageRenderer {
     this.transition = options.transition;
     this.layout = options.layout ?? VERTICAL_LAYOUT;
     this.adjust = options.adjust ?? DEFAULT_ADJUSTMENTS;
+    this.fast = options.fast ?? false;
     this.composer = new FrameComposer(
       options.caption,
       options.filter,
       this.layout,
       this.adjust,
+      this.fast,
     );
 
     for (let i = 0; i < videoTracks.length; i++) {
@@ -418,6 +423,7 @@ export class MontageRenderer {
       options.filter,
       this.layout,
       this.adjust,
+      this.fast,
     );
   }
 

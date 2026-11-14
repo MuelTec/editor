@@ -63,12 +63,14 @@ export function startLivePreview(
   guides = false,
   filter: FilterId = 'none',
   adjust?: Adjustments,
+  /** Prévia: caminho reduzido do blur (leve em tablets — Etapa 13). */
+  fast = false,
 ): LivePreview {
   const ctx = canvas.getContext('2d', { alpha: false });
   if (!ctx) return { stop: () => {} };
 
   // Uma instância só: a camada da legenda é reconstruída só quando muda.
-  const composer = new FrameComposer(caption, filter, VERTICAL_LAYOUT, adjust);
+  const composer = new FrameComposer(caption, filter, VERTICAL_LAYOUT, adjust, fast);
   const scale = canvas.width / OUT_WIDTH;
   let raf = 0;
   let stopped = false;
@@ -121,6 +123,12 @@ export interface MontagePreviewOptions {
   /** Ajustes finos de imagem (Etapa 10). */
   adjust?: Adjustments;
   guides?: boolean;
+  /**
+   * Caminho reduzido do blur (Etapa 13): em tablets/Android WebView o
+   * `ctx.filter = blur(42px)` em 1080×1920 derruba o quadro durante as
+   * transições. A prévia usa `true`; o export continua na qualidade cheia.
+   */
+  fast?: boolean;
   /** (tempoAtual, duração) em segundos — pra barra de posição da UI. */
   onTime?: (time: number, duration: number) => void;
 }
@@ -167,6 +175,7 @@ export function startMontagePreview(
       filter: current.filter,
       caption: current.caption,
       adjust: current.adjust,
+      fast: current.fast,
       startTime: clock,
     });
     if (stopped || gen !== generation) {
@@ -199,9 +208,13 @@ export function startMontagePreview(
     lastFrame = now;
 
     const total = renderer?.timeline.total ?? 0;
-    if (!paused && total > 0) {
-      clock += dt;
-      if (clock >= total) clock = 0; // loop
+    if (total > 0) {
+      if (!paused) {
+        clock += dt;
+        if (clock >= total) clock = 0; // loop
+      }
+      // Sempre avisa a UI, MESMO pausado: é por aqui que a duração chega
+      // quando a prévia nasce pausada (senão a timeline ficava 0:00/0:00).
       options.onTime?.(clock, total);
     }
 

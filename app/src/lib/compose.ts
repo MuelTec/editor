@@ -82,17 +82,23 @@ export function containRect(
  *
  * `baseFilter` é o filtro de cor do preset (Etapa 5) — combinado com o blur
  * na mesma string, já que `ctx.filter` aceita uma lista de filtros.
+ *
+ * `fast` (prévia): em vez de aplicar `blur(42px)` direto no GPU — caro em
+ * tablets/Android WebView — desenha REDUZIDO (1/18) e amplia de volta. O
+ * blur pequeno no canvas reduzido custa uma fração e o resultado ampliado
+ * é equivalente.
  */
 function drawBlurredBackground(
   ctx: CanvasRenderingContext2D,
   source: FrameSource,
   baseFilter = 'none',
   m: FrameLayout = VERTICAL_LAYOUT,
+  fast = false,
 ): void {
   const srcW = source.width;
   const srcH = source.height;
 
-  if (supportsCanvasFilter) {
+  if (supportsCanvasFilter && !fast) {
     ctx.save();
     // Folga maior que o raio do blur: as bordas borradas caem fora do visível.
     // Atenção: 'none blur(4px)' é string INVÁLIDA e seria ignorada pelo
@@ -105,7 +111,9 @@ function drawBlurredBackground(
     return;
   }
 
-  // Fallback (sem suporte a filtro): reduz muito a imagem e amplia de volta.
+  // Caminho reduzido (fallback sem filtro OU modo rápido da prévia):
+  // reduz muito a imagem e amplia de volta — o próprio upscale borracha,
+  // e um blur pequeno no canvas reduzido fecha o efeito.
   const tinyW = Math.max(2, Math.round(m.width / 18));
   const tinyH = Math.max(2, Math.round(m.height / 18));
   if (!tinyCanvas || tinyCanvas.width !== tinyW || tinyCanvas.height !== tinyH) {
@@ -119,15 +127,80 @@ function drawBlurredBackground(
   const tr = coverRect(srcW, srcH, tinyCanvas.width, tinyCanvas.height, 1.25);
   tinyCtx.clearRect(0, 0, tinyCanvas.width, tinyCanvas.height);
   tinyCtx.save();
-  tinyCtx.filter = baseFilter;
+  if (fast && supportsCanvasFilter) {
+    // Raio equivalente em escala reduzida (blur cheio ≈ width/26).
+    const full = Math.max(24, Math.round(m.width / 26));
+    const scaled = Math.max(1, Math.round(full / (m.width / tinyW)));
+    const blur = `blur(${scaled}px)`;
+    tinyCtx.filter = baseFilter === 'none' ? blur : `${baseFilter} ${blur}`;
+  } else {
+    tinyCtx.filter = baseFilter;
+  }
   source.draw(tinyCtx, tr.dx, tr.dy, tr.dw, tr.dh);
   tinyCtx.restore();
 
   ctx.save();
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
+  // 'high' é resampling caro no CPU: só no fallback sem filtro. No modo
+  // rápido a fonte já está borrada e o upscale não precisa dele (Etapa 13).
+  if (!fast) ctx.imageSmoothingQuality = 'high';
   const br = coverRect(tinyCanvas.width, tinyCanvas.height, m.width, m.height, 1.25);
   ctx.drawImage(tinyCanvas, br.dx, br.dy, br.dw, br.dh);
+  ctx.restore();
+}
+
+/**
+ * Desenha o VÍDEO NÍTIDO com um blur de transição aplicado.
+ *
+ * No modo `fast` (prévia), o blur do GPU é substituído pela mesma técnica
+ * reduzida do fundo: desenha pequeno com blur pequeno e amplia — muito mais
+ * leve em tablets, onde `ctx.filter = blur(30px)` em 1080×1920 derruba o
+ * quadro.
+ */
+function drawBlurredContent(
+  ctx: CanvasRenderingContext2D,
+  source: FrameSource,
+  baseFilter: string,
+  blurPx: number,
+  rect: { dx: number; dy: number; dw: number; dh: number },
+  m: FrameLayout,
+  fast: boolean,
+): void {
+  if (!fast || !supportsCanvasFilter) {
+    const filter = combineFilters(baseFilter, `blur(${Math.round(blurPx)}px)`);
+    if (supportsCanvasFilter) ctx.filter = filter || 'none';
+    source.draw(ctx, rect.dx, rect.dy, rect.dw, rect.dh);
+    return;
+  }
+
+  const tinyW = Math.max(2, Math.round(m.width / 18));
+  const tinyH = Math.max(2, Math.round(m.height / 18));
+  if (!tinyCanvas || tinyCanvas.width !== tinyW || tinyCanvas.height !== tinyH) {
+    tinyCanvas = document.createElement('canvas');
+    tinyCanvas.width = tinyW;
+    tinyCanvas.height = tinyH;
+  }
+  const tinyCtx = tinyCanvas.getContext('2d');
+  if (!tinyCtx) return;
+
+  const tr = containRect(source.width, source.height, {
+    ...m,
+    width: tinyW,
+    height: tinyH,
+  });
+  tinyCtx.clearRect(0, 0, tinyW, tinyH);
+  tinyCtx.save();
+  const scaled = Math.max(1, Math.round(blurPx / (m.width / tinyW)));
+  const filter = combineFilters(baseFilter, `blur(${scaled}px)`);
+  tinyCtx.filter = filter || 'none';
+  source.draw(tinyCtx, tr.dx, tr.dy, tr.dw, tr.dh);
+  tinyCtx.restore();
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  // Copia o canvas reduzido INTEIRO (o blur sangra pra fora do retângulo).
+  // Qualidade padrão: a fonte já está borrada, 'high' só custaria CPU.
+  ctx.drawImage(tinyCanvas, 0, 0, tinyW, tinyH, 0, 0, m.width, m.height);
   ctx.restore();
 }
 
@@ -215,13 +288,28 @@ export class FrameComposer {
   private captionLayer: HTMLCanvasElement | null = null;
   private captionKey = '';
   private captionPivot = { cx: 0, cy: 0 };
+  /** Buffer do glitch (1 desenho de vídeo + cópias de faixa — Etapa 13). */
+  private glitchBuffer: HTMLCanvasElement | null = null;
 
   constructor(
     private readonly caption?: CaptionOptions,
     private readonly filter: FilterId = 'none',
     private readonly layout: FrameLayout = VERTICAL_LAYOUT,
     private readonly adjust: Adjustments = DEFAULT_ADJUSTMENTS,
+    /** Prévia: usa o caminho reduzido do blur (leve em tablets). */
+    private readonly fast = false,
   ) {}
+
+  private ensureGlitchBuffer(m: FrameLayout): HTMLCanvasElement | null {
+    let buf = this.glitchBuffer;
+    if (!buf || buf.width !== m.width || buf.height !== m.height) {
+      buf = document.createElement('canvas');
+      buf.width = m.width;
+      buf.height = m.height;
+      this.glitchBuffer = buf;
+    }
+    return buf;
+  }
 
   render(
     ctx: CanvasRenderingContext2D,
@@ -255,7 +343,7 @@ export class FrameComposer {
         ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);
         ctx.clip();
       }
-      drawBlurredBackground(ctx, layer.source, layerFilter, m);
+      drawBlurredBackground(ctx, layer.source, layerFilter, m, this.fast);
       ctx.restore();
     }
 
@@ -274,21 +362,42 @@ export class FrameComposer {
         ctx.clip();
       }
       if (layer.glitch && layer.glitch > 0) {
-        // GLITCH (Etapa 12): fatias horizontais deslocadas + tintes RGB.
+        // GLITCH (Etapa 12/13): 1 desenho de vídeo num buffer + faixas
+        // copiadas do próprio buffer — antes eram 7 desenhos de vídeo com
+        // filtro, o que travava tablets.
         const g = Math.min(1, layer.glitch);
         const bands = 7;
         const bandH = m.height / bands;
-        for (let b = 0; b < bands; b++) {
-          const jitter = (bandNoise(b) - 0.5) * 2;
-          const shift = jitter * g * m.width * 0.06;
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(-m.width, b * bandH, m.width * 3, bandH + 1);
-          ctx.clip();
-          ctx.translate(shift, 0);
-          if (supportsCanvasFilter) ctx.filter = layerFilter;
-          layer.source.draw(ctx, rect.dx, rect.dy, rect.dw, rect.dh);
-          ctx.restore();
+        const buf = this.ensureGlitchBuffer(m);
+        const bctx = buf?.getContext('2d');
+        if (bctx && buf) {
+          bctx.setTransform(1, 0, 0, 1, 0, 0);
+          bctx.clearRect(0, 0, m.width, m.height);
+          bctx.save();
+          if (supportsCanvasFilter) bctx.filter = layerFilter;
+          layer.source.draw(bctx, rect.dx, rect.dy, rect.dw, rect.dh);
+          bctx.restore();
+          for (let b = 0; b < bands; b++) {
+            const jitter = (bandNoise(b) - 0.5) * 2;
+            const shift = jitter * g * m.width * 0.06;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(-m.width, b * bandH, m.width * 3, bandH + 1);
+            ctx.clip();
+            ctx.translate(shift, 0);
+            ctx.drawImage(
+              buf,
+              0,
+              b * bandH,
+              m.width,
+              bandH + 1,
+              0,
+              b * bandH,
+              m.width,
+              bandH + 1,
+            );
+            ctx.restore();
+          }
         }
         ctx.save();
         ctx.globalCompositeOperation = 'overlay';
@@ -298,6 +407,10 @@ export class FrameComposer {
         ctx.fillStyle = '#ff2a68';
         ctx.fillRect(0, bandH * 5, m.width, bandH);
         ctx.restore();
+      } else if (layer.blur && layer.blur > 0) {
+        // Transição "Desfoque": no modo rápido o blur sai pelo caminho
+        // reduzido (mesma técnica do fundo) — leve em tablets.
+        drawBlurredContent(ctx, layer.source, baseFilter, layer.blur, rect, m, this.fast);
       } else {
         if (supportsCanvasFilter) ctx.filter = layerFilter;
         layer.source.draw(ctx, rect.dx, rect.dy, rect.dw, rect.dh);
