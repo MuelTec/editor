@@ -905,6 +905,60 @@ Ativação futura: `gh auth refresh -s workflow` → copiar `ci/*.yml` pra
    Também: `;` em argumento do `sdkmanager` chega partido no cmd — chamar
    `java -cp "...\lib\*" com.android.sdklib.tool.sdkmanager.SdkManagerCli`.
 
+### 🎬 Etapa 12 — layout profissional estilo CapCut + Etapa 12 do Muel (feito em 13/11/2026)
+
+**O que o Muel pediu:** (1) ícone atual bonito (já feito na Etapa 11.5),
+(2) timeline pra escolher o tempo da música, (3) verificar batidas da música
+pra destacar e cortar nelas, (4) transições entre os cortes, (5) filtros
+inspirados nos do FFmpeg (Cinema quente, Vintage, Dark, Film Kodak, Retrô,
+Tons naturais), (6) transições: Zoom in/out, Desfoque, Glitch, Flash,
+Dissolver, Deslizar 3D, (7) botão de voltar. E o **layout novo estilo CapCut**
+(com imagem de referência), depois "traga as funções que já existem e coloque
+nos seus lugares".
+
+**Layout (grid CSS, 5 áreas nomeadas):**
+| Área | Classe | O que vive nela |
+|---|---|---|
+| Topbar | `.topbar` | marca + ícone, badge "100% no seu aparelho", **← Voltar**, Exportar |
+| Library (esquerda) | `.library-panel` | abas **Mídia / Modelos·Filtros / Áudio** |
+| Preview (centro) | `.preview-panel` | monitor 9:16 + controles + hero/progresso/resultado |
+| Inspector (direita) | `.inspector-panel` | abas **Ajustes / Legenda / Saída** |
+| Timeline (base) | `.timeline-panel` | régua, trilha de clipes, batidas, forma de onda da música |
+
+**Motor novo:**
+- **Filtros** (`filters.ts`): +5 presets inspirados no FFmpeg — `cinema`
+  (Cinema quente), `dark`, `kodak` (Film Kodak), `retro` (Retrô),
+  `natural` (Tons naturais). **FFmpeg não foi importado** (binário C/WASM
+  ~30 MB impossível de embutir no browser) — replicados 1:1 com
+  `ctx.filter` CSS + overlays (vignette/tint), 100% local. Total: 13 filtros.
+- **Transições** (`montage.ts`): 9 no total — Dissolver, Varredura, Flash,
+  Zoom in, **Zoom out**, **Desfoque**, **Glitch**, Deslizar, **Girar 3D**.
+  `audioRange` trata `flash`/`glitch` como corte seco no meio.
+- **Compositor** (`compose.ts`): `FrameLayer` ganhou `blur`, `glitch`
+  (7 fatias deslocadas + tintes `#00ffd5`/`#ff2a68`), `transformBg` e
+  `scaleX`/`scaleY` (giro 3D — o fundo NÃO gira, fica fixo atrás).
+- **Batidas** (`beats.ts`): `analyzeMusic` (FFT própria, spectral flux)
+  → BPM + onsets; `beatsInTimeline` converte pro tempo da montagem (loop);
+  `snapCutsToBeats` estica/encolhe os trims pra cada corte parar na batida.
+- **Timeline**: régua com passo adaptativo, blocos de clipes proporcionais,
+  marcadores de transição, playhead branco, **batidas rosa** (`.tl-beat`)
+  na trilha de vídeo e **forma de onda da música em canvas** com handle
+  branco do offset (arrastável) + playhead amarelo sincronizado.
+
+**Teste no navegador (3 WebM gerados via canvas+MediaRecorder, 1 WAV 120 BPM):**
+- 3 clipes injetados → lista, trim, reordenação OK; timeline 0:04.
+- Troca de transição (Dissolver → Glitch) atualiza a prévia na hora.
+- Música: **120 BPM detectado, 15 batidas**, forma de onda desenhada;
+  "⚡ Sincronizar cortes" → aviso + **8 marcações** na trilha.
+- Seek na régua: playhead 49,9% ↔ tempo 0:02/0:04 sincronizados.
+- **Exportação real**: MP4 **1080×1920, 4,07s**, + saída 16:9, capa PNG.
+- Console **0 erros / 0 warnings** em todo o percurso.
+
+**Publicado:**
+- `main` → commit `9589643` (o remoto tinha uploads feitos pela web;
+  rebase integrou sem perder o teste — `git diff` vazio contra a árvore testada).
+- `gh-pages` → deploy `e521c8e`; site **https://mueltec.github.io/editor/**
+  servindo o build novo (`index-D-kv5b7r.js`), console 0 erros.
 
 - [ ] Gravar → sair **2 arquivos** automaticamente (horizontal + vertical)
 - [ ] Versão vertical já sai **com legenda automática** no espaço do fundo borrado
@@ -939,4 +993,4 @@ Ativação futura: `gh auth refresh -s workflow` → copiar `ci/*.yml` pra
 
 ---
 
-*Atualizado em: 12/11/2026*
+*Atualizado em: 13/11/2026*
