@@ -44,15 +44,23 @@ export type TransitionId =
   | 'wipe'
   | 'flash'
   | 'zoom'
-  | 'push';
+  | 'zoomOut'
+  | 'push'
+  | 'blur'
+  | 'glitch'
+  | 'flip3d';
 
 /** Rótulos das transições pra UI (Etapa 12). */
 export const TRANSITIONS: { id: TransitionId; label: string; hint: string }[] = [
-  { id: 'crossfade', label: 'Fusão', hint: 'Um clipe dissolve no outro' },
+  { id: 'crossfade', label: 'Dissolver', hint: 'Um clipe dissolve no outro' },
   { id: 'wipe', label: 'Varredura', hint: 'O novo entra numa passada lateral' },
   { id: 'flash', label: 'Flash', hint: 'Corte seco com luz branca' },
-  { id: 'zoom', label: 'Zoom', hint: 'O novo chega aproximando' },
-  { id: 'push', label: 'Empurrão', hint: 'O novo empurra o anterior' },
+  { id: 'zoom', label: 'Zoom in', hint: 'O novo chega aproximando' },
+  { id: 'zoomOut', label: 'Zoom out', hint: 'O novo cresce a partir do fundo' },
+  { id: 'blur', label: 'Desfoque', hint: 'O novo surge desfocado até ficar nítido' },
+  { id: 'glitch', label: 'Glitch', hint: 'Corte com distorção digital' },
+  { id: 'push', label: 'Deslizar', hint: 'O novo desliza empurrando o anterior' },
+  { id: 'flip3d', label: 'Girar 3D', hint: 'O vídeo gira como um cartão' },
 ];
 
 export interface MontageModel {
@@ -448,13 +456,14 @@ export class MontageRenderer {
    */
   audioRange(i: number): [number, number] {
     const { clips, transitions, total } = this.timeline;
-    const flash = this.transition === 'flash';
+    // flash e glitch são CORTE SECO no meio da transição (o áudio acompanha).
+    const hardCut = this.transition === 'flash' || this.transition === 'glitch';
     const start = clips[i].start;
-    const from = flash && i > 0 ? start + transitions[i - 1] / 2 : start;
+    const from = hardCut && i > 0 ? start + transitions[i - 1] / 2 : start;
     const to =
       i >= clips.length - 1
         ? total
-        : clips[i + 1].start + (flash ? transitions[i] / 2 : 0);
+        : clips[i + 1].start + (hardCut ? transitions[i] / 2 : 0);
     return [from, Math.max(from, to)];
   }
 
@@ -511,6 +520,39 @@ export class MontageRenderer {
         layers[1].alpha = p;
         layers[1].transform = { scale: 1 + 0.16 * (1 - p) };
         layers[0].transform = { scale: 1 + 0.08 * p };
+      } else if (this.transition === 'zoomOut') {
+        // O novo cresce a partir do fundo (0,86 → 1) e o anterior recua.
+        layers[1].alpha = p;
+        layers[1].transform = { scale: 0.86 + 0.14 * p };
+        layers[0].transform = { scale: 1 - 0.08 * p };
+        layers[0].alpha = 1 - p * 0.45;
+      } else if (this.transition === 'blur') {
+        // O novo surge desfocado até ficar nítido; o anterior desfoca na saída.
+        layers[1].alpha = p;
+        layers[1].blur = (1 - p) * 30;
+        layers[1].transform = { scale: 1 + 0.05 * (1 - p) };
+        layers[0].blur = p * 30;
+        layers[0].alpha = 1 - p * 0.35;
+      } else if (this.transition === 'glitch') {
+        // Corte seco no meio mascarado por distorção digital (fatias + tintes).
+        if (p < 0.5) layers.length = 1;
+        const g = Math.sin(Math.PI * p) * 0.95;
+        layers[0].glitch = g;
+        if (layers.length > 1) layers[1].glitch = g;
+        flash = g * 0.1;
+      } else if (this.transition === 'flip3d') {
+        // Gira como um cartão: espreme no eixo X e dá uma leve inclinação
+        // vertical; o fundo NÃO gira (transformBg=false) — ele continua
+        // cobrindo o quadro inteiro por trás do cartão.
+        const angle = (p * Math.PI) / 2;
+        const squash = 1 - 0.12 * Math.sin(Math.PI * p);
+        layers[1].transform = { scaleX: Math.sin(angle), scaleY: squash };
+        layers[0].transform = { scaleX: Math.cos(angle), scaleY: squash };
+        layers[1].transformBg = false;
+        layers[0].transformBg = false;
+        layers[1].alpha = p;
+        // Luz no meio do giro (esconde o momento edge-on do cartão).
+        flash = Math.max(0, 1 - Math.abs(p - 0.5) * 5) * 0.55;
       } else if (this.transition === 'push') {
         // Empurrão horizontal: um cobre exatamente o vão que o outro abre.
         const w = this.layout.width;

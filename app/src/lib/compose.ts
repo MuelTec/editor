@@ -143,10 +143,21 @@ export interface FrameLayer {
   clip?: { x: number; y: number; w: number; h: number } | null;
   /**
    * Deslocamento/escala da camada (Etapa 12): `scale` gira em torno do
-   * centro do layout (transição zoom) e `x`/`y` deslocam em px do layout
-   * (transição push).
+   * centro do layout (transição zoom), `x`/`y` deslocam em px do layout
+   * (transição push) e `scaleX`/`scaleY` fazem o efeito de GIRA 3D
+   * (transição flip — cartão virando).
    */
-  transform?: { x?: number; y?: number; scale?: number };
+  transform?: { x?: number; y?: number; scale?: number; scaleX?: number; scaleY?: number };
+  /** Raio de desfoque em px do layout (transição blur). */
+  blur?: number;
+  /** Intensidade 0..1 do glitch (fatias deslocadas + tintes, Etapa 12). */
+  glitch?: number;
+  /**
+   * Se o FUNDO borrado acompanha o transform da camada (padrão `true`).
+   * A transição 3D desliga isso: o fundo continua cobrindo o quadro inteiro
+   * enquanto só o vídeo nítido gira por cima dele.
+   */
+  transformBg?: boolean;
 }
 
 /** Aplica o transform da camada (escala no centro + deslocamento). */
@@ -156,14 +167,24 @@ function applyLayerTransform(
   m: FrameLayout,
 ): void {
   const scale = transform.scale ?? 1;
-  if (scale !== 1) {
+  const scaleX = transform.scaleX ?? 1;
+  const scaleY = transform.scaleY ?? 1;
+  const sx = scale * scaleX;
+  const sy = scale * scaleY;
+  if (sx !== 1 || sy !== 1) {
     ctx.translate(m.width / 2, m.height / 2);
-    ctx.scale(scale, scale);
+    ctx.scale(sx, sy);
     ctx.translate(-m.width / 2, -m.height / 2);
   }
   const x = transform.x ?? 0;
   const y = transform.y ?? 0;
   if (x !== 0 || y !== 0) ctx.translate(x, y);
+}
+
+/** Pseudo-aleatório determinístico (mesmo valor pra mesma faixa). */
+function bandNoise(i: number): number {
+  const v = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+  return v - Math.floor(v);
 }
 
 /** Extras de desenho aplicados entre o conteúdo e a legenda. */
@@ -220,21 +241,30 @@ export class FrameComposer {
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, m.width, m.height);
     for (const layer of layers) {
+      // Blur da transição entra na MESMA string de filtro do preset.
+      const layerFilter = layer.blur
+        ? combineFilters(baseFilter, `blur(${Math.round(layer.blur)}px)`)
+        : baseFilter;
       ctx.save();
       ctx.globalAlpha = layer.alpha ?? 1;
-      if (layer.transform) applyLayerTransform(ctx, layer.transform, m);
+      if (layer.transform && layer.transformBg !== false) {
+        applyLayerTransform(ctx, layer.transform, m);
+      }
       if (layer.clip) {
         ctx.beginPath();
         ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);
         ctx.clip();
       }
-      drawBlurredBackground(ctx, layer.source, baseFilter, m);
+      drawBlurredBackground(ctx, layer.source, layerFilter, m);
       ctx.restore();
     }
 
     // 2) Vídeo nítido, contido, centralizado (com o mesmo filtro)
     for (const layer of layers) {
       const rect = containRect(layer.source.width, layer.source.height, m);
+      const layerFilter = layer.blur
+        ? combineFilters(baseFilter, `blur(${Math.round(layer.blur)}px)`)
+        : baseFilter;
       ctx.save();
       ctx.globalAlpha = layer.alpha ?? 1;
       if (layer.transform) applyLayerTransform(ctx, layer.transform, m);
@@ -243,8 +273,35 @@ export class FrameComposer {
         ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);
         ctx.clip();
       }
-      if (supportsCanvasFilter) ctx.filter = baseFilter;
-      layer.source.draw(ctx, rect.dx, rect.dy, rect.dw, rect.dh);
+      if (layer.glitch && layer.glitch > 0) {
+        // GLITCH (Etapa 12): fatias horizontais deslocadas + tintes RGB.
+        const g = Math.min(1, layer.glitch);
+        const bands = 7;
+        const bandH = m.height / bands;
+        for (let b = 0; b < bands; b++) {
+          const jitter = (bandNoise(b) - 0.5) * 2;
+          const shift = jitter * g * m.width * 0.06;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(-m.width, b * bandH, m.width * 3, bandH + 1);
+          ctx.clip();
+          ctx.translate(shift, 0);
+          if (supportsCanvasFilter) ctx.filter = layerFilter;
+          layer.source.draw(ctx, rect.dx, rect.dy, rect.dw, rect.dh);
+          ctx.restore();
+        }
+        ctx.save();
+        ctx.globalCompositeOperation = 'overlay';
+        ctx.globalAlpha = (layer.alpha ?? 1) * 0.32 * g;
+        ctx.fillStyle = '#00ffd5';
+        ctx.fillRect(0, bandH * 2, m.width, bandH);
+        ctx.fillStyle = '#ff2a68';
+        ctx.fillRect(0, bandH * 5, m.width, bandH);
+        ctx.restore();
+      } else {
+        if (supportsCanvasFilter) ctx.filter = layerFilter;
+        layer.source.draw(ctx, rect.dx, rect.dy, rect.dw, rect.dh);
+      }
       ctx.restore();
     }
 

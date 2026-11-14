@@ -18,7 +18,14 @@ export type FilterId =
   | 'bw'
   | 'vivid'
   | 'vintage'
-  | 'noir';
+  | 'noir'
+  /* Etapa 12 — filtros inspirados nos presets do FFmpeg (ffmpeg-filters),
+     replicados com ctx.filter + overlays: 100% local, sem binário externo. */
+  | 'cinema' // Cinema quente
+  | 'dark' // Dark
+  | 'kodak' // Film Kodak
+  | 'retro' // Retrô
+  | 'natural'; // Tons naturais
 
 export interface FilterPreset {
   id: FilterId;
@@ -76,6 +83,51 @@ export const FILTERS: FilterPreset[] = [
     label: 'Noir',
     css: 'grayscale(1) contrast(1.3) brightness(0.95)',
     overlay: { vignette: 0.5 },
+  },
+  /* ---------------- Etapa 12: presets inspirados no FFmpeg ---------------- */
+  {
+    id: 'cinema',
+    label: 'Cinema quente',
+    // Teal & orange de cinema: sepia leve nas altas, contraste firme.
+    css: 'sepia(0.16) saturate(1.18) contrast(1.14) brightness(1.02)',
+    overlay: {
+      vignette: 0.34,
+      tint: { color: '#ff9a4d', alpha: 0.12, mode: 'soft-light' },
+    },
+  },
+  {
+    id: 'dark',
+    label: 'Dark',
+    css: 'saturate(0.82) contrast(1.22) brightness(0.86)',
+    overlay: {
+      vignette: 0.5,
+      tint: { color: '#1a2a4a', alpha: 0.18, mode: 'multiply' },
+    },
+  },
+  {
+    id: 'kodak',
+    label: 'Film Kodak',
+    // Stock Kodak: grãos dourados, pretos leves, saturação confortável.
+    css: 'sepia(0.12) saturate(1.28) contrast(1.08) brightness(1.04)',
+    overlay: {
+      vignette: 0.26,
+      tint: { color: '#ffd9a0', alpha: 0.14, mode: 'soft-light' },
+    },
+  },
+  {
+    id: 'retro',
+    label: 'Retrô',
+    // Pretos lavados + tingimento magenta de filme velho.
+    css: 'contrast(0.9) brightness(1.08) saturate(0.88) sepia(0.18)',
+    overlay: {
+      vignette: 0.24,
+      tint: { color: '#d8a0c8', alpha: 0.16, mode: 'soft-light' },
+    },
+  },
+  {
+    id: 'natural',
+    label: 'Tons naturais',
+    css: 'saturate(1.06) contrast(1.03) brightness(1.01)',
   },
 ];
 
