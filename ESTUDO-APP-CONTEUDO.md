@@ -975,6 +975,67 @@ nos seus lugares".
 
 ---
 
+### 🎬 Etapa 13 — música legível na timeline, zoom da linha e tablet sem travar (feito em 14/11/2026)
+
+**O que o Muel pediu:** (1) com a música de verdade a **barra de batidas
+era impossível de visualizar** e a linha do tempo não acompanhava,
+(2) **zoom só na linha do tempo** (não no app inteiro),
+(3) editando no **tablet as transições davam travada** no vídeo.
+
+**Diagnóstico (arquivos REAIS do Desktop — 3 MP4 do WhatsApp + música
+`.mpeg` 3:27, 123 BPM, 829 batidas):**
+- A barra de música desenhava a música INTEIRA (207s) em 755px →
+  **98% das colunas eram rosa** (829 batidas + pontinhos espremidos).
+- O `blur(30px)` de `ctx.filter` em 1080×1920 na transição "Desfoque"
+  custava ~34ms/quadro no tablet (GPU fraca derruba o frame).
+- Perfil CPU: `drawImage` era o maior custo; `imageSmoothingQuality='high'`
+  no upscale do fundo borrado cobrava caro no CPU.
+
+**Soluções:**
+- **Música na escala da janela** (`App.tsx`): a barra usa o MESMO intervalo
+  da linha — `musicAt(t) = (offset + t) % dur` com loop; batidas vêm de
+  `timelineBeats` filtradas à janela visíveis; playhead amarelo alinhado ao
+  branco (≤1px); marcador branco no t=0 da música; trecho "pulado" calcado
+  por ciclo. Batidas com <12px entre si desenham **só a linha** (sem
+  pontinho) — **98% → 12% de rosa**; com zoom elas se abrem (12% → 35%).
+- **Arrastar a onda = pan do offset**: `pointerdown/move` na forma de onda
+  move a música por baixo da linha (`offset = start − dxSec`, cursor
+  `grab`); validado numericamente (delta 6,74s vs esperado 6,62s).
+- **Zoom só na linha** (`zoom` 1..total/0,5 + `viewStart`): tudo usa a
+  janela `[viewStart, viewStart+viewSpan]` — régua com passo adaptativo
+  (`RULER_STEPS`/`formatTick`), clipes posicionados por
+  `buildTimeline(...)` com **sobreposição real** + marcadores de transição
+  absolutos, batidas e playhead filtrados. Botões **− / % / + / Ajustar**;
+  **Ctrl+role = zoom no cursor**, role = pan (`passive:false`, clamp nas
+  pontas); auto-follow do playhead só enquanto toca (11% → 87% mantido
+  visível); seek na régua converte pelo span da janela.
+- **Tablet sem travar** (`fast`): `FrameComposer.fast` na prévia — blur do
+  fundo via canvas reduzido **1/18 + upscale**; "Desfoque" via
+  `drawBlurredContent`; Glitch desenha **1× em buffer + 7 cópias de faixa**;
+  `imageSmoothingQuality='high'` só no fallback sem filtro. O **export
+  mantém `fast=false`** (qualidade integral). Pior quadro nas transições:
+  **34ms → 17ms**, 60,2fps estáveis, 0 quadros >34ms.
+
+**Bugs encontrados e corrigidos no caminho:**
+1. `setPointerCapture` lançava em ponteiro sintético → `try/catch`.
+2. Prévia recriada (trim/clipe novo) voltava **tocando com a UI em ▶** →
+   `montagePlayingRef` + `api.setPaused(!ref)` na criação.
+3. Prévia que nasce pausada mostrava **0:00/0:00** (duração só chegava
+   pelo `onTime` de um quadro ativo) → `onTime` dispara **mesmo pausado** e
+   o App aplica `setMontageDuration(d)` sempre (idempotente).
+
+**Teste final (arquivos reais, console 0 erros / 0 warnings):**
+- Zoom 100/120/196/274/384% com régua adaptativa; Ajustar volta ao total;
+  Ctrl+role/role testados com `defaultPrevented=true`.
+- Alinhamento batidas vídeo↔música: **77/77 ≤1px** (média 0px).
+- Auto-follow + seek com zoom 384% corretos; linha para ao pausar.
+- Recriação da prévia pausada: permanece pausado, duração chega (0:34 com
+  4 clipes), play/pause OK.
+- Visual: glitch (faixas+tintes) e desfoque renderizando certo; export
+  MP4 **1080×1920, 25,5s** em ~50s, **0 avisos**.
+
+---
+
 ## 8. PRÓXIMOS PASSOS DE ESTUDO
 
 - [ ] Rodar/ver o **OpenDesign** funcionando
@@ -993,4 +1054,4 @@ nos seus lugares".
 
 ---
 
-*Atualizado em: 13/11/2026*
+*Atualizado em: 14/11/2026*
