@@ -1239,64 +1239,94 @@ export default function App() {
 
       {/* ============================ 2. LIBRARY =========================== */}
       <aside className="library-panel">
-        <div className="library-tabs" role="tablist">
-          {(
-            [
-              ['midia', 'Mídia'],
-              ['modelos', mode === 'montage' ? 'Modelos' : 'Filtros'],
-              ['audio', 'Áudio'],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={libTab === id}
-              className={`lib-tab${libTab === id ? ' active' : ''}`}
-              onClick={() => setLibTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <div className="library-content">
-          {notice && (
-            <div className="notice-pill" onClick={() => setNotice(null)} title="Clique para fechar">
-              {notice}
+        {phase === 'idle' ? (
+          <div className="splash-screen">
+            <div className="splash-gradient" />
+            <div className="splash-content">
+              <h1>GTA VI <br/>Editor</h1>
+              <p>Crie vídeos épicos com o estilo da próxima geração.</p>
+              <div className="splash-actions">
+                <button
+                  className="btn btn--primary btn--big"
+                  onClick={() => {
+                    setMode('single');
+                    setPhase('ready');
+                  }}
+                >
+                  Novo Projeto
+                </button>
+                <button
+                  className="btn btn--accent btn--big"
+                  onClick={() => {
+                    setMode('montage');
+                    setPhase('ready');
+                  }}
+                >
+                  Nova Montagem
+                </button>
+              </div>
             </div>
-          )}
+          </div>
+        ) : (
+          <>
+            <div className="library-tabs" role="tablist">
+              {(
+                [
+                  ['midia', 'Mídia'],
+                  ['modelos', mode === 'montage' ? 'Modelos' : 'Filtros'],
+                  ['audio', 'Áudio'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={libTab === id}
+                  className={`lib-tab${libTab === id ? ' active' : ''}`}
+                  onClick={() => setLibTab(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
 
-          {/* ---------------- ABA MÍDIA ---------------- */}
-          {libTab === 'midia' && (
-            <>
-              {(phase === 'idle' || phase === 'error') && (
-                <div className="mode-row" role="radiogroup" aria-label="Modo de trabalho">
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={mode === 'single'}
-                    className={`mode-chip${mode === 'single' ? ' mode-chip--on' : ''}`}
-                    onClick={() => {
-                      reset();
-                      setMode('single');
-                    }}
-                  >
-                    Vídeo único
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={mode === 'montage'}
-                    className={`mode-chip${mode === 'montage' ? ' mode-chip--on' : ''}`}
-                    onClick={() => {
-                      reset();
-                      setMode('montage');
-                    }}
-                  >
-                    Montagem
-                  </button>
+            <div className="library-content">
+              {notice && (
+                <div className="notice-pill" onClick={() => setNotice(null)} title="Clique para fechar">
+                  {notice}
                 </div>
               )}
+
+              {/* ---------------- ABA MÍDIA ---------------- */}
+              {libTab === 'midia' && (
+                <>
+                  {(phase === 'idle' || phase === 'error') && (
+                    <div className="mode-row" role="radiogroup" aria-label="Modo de trabalho">
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={mode === 'single'}
+                        className={`mode-chip${mode === 'single' ? ' mode-chip--on' : ''}`}
+                        onClick={() => {
+                          reset();
+                          setMode('single');
+                        }}
+                      >
+                        Vídeo único
+                      </button>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={mode === 'montage'}
+                        className={`mode-chip${mode === 'montage' ? ' mode-chip--on' : ''}`}
+                        onClick={() => {
+                          reset();
+                          setMode('montage');
+                        }}
+                      >
+                        Montagem
+                      </button>
+                    </div>
+                  )}
 
               {(phase === 'idle' || phase === 'error') && (
                 <section
@@ -1720,17 +1750,10 @@ export default function App() {
         {phase === 'idle' && (
           <div className="hero">
             <img className="hero-icon" src="./icon.svg" alt="" width={96} height={96} />
-            <h2>Transforme vídeos em Stories e Reels</h2>
+            <h2>Crie com Estilo</h2>
             <p>
-              Legendas automáticas, filtros, transições, trilha com batidas —
-              tudo 100% no seu aparelho.
+              Tudo pronto para começar. Escolha um modo acima para iniciar sua edição.
             </p>
-            <button
-              className="btn-export btn-export--big"
-              onClick={() => inputRef.current?.click()}
-            >
-              Escolher vídeos
-            </button>
           </div>
         )}
 
