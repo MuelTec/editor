@@ -1,36 +1,24 @@
-# CI pronta para ativar
+# CI do projeto
 
-Os dois workflows do projeto estão aqui, prontos. Eles estão **fora** de
-`.github/workflows/` porque o push de arquivos de workflow exige o escopo
-`workflow` no token do GitHub (o token atual tem só `repo`, `gist`,
-`read:org`), e sem isso o git recusa o push inteiro.
+## build-apk.yml — ATIVO
 
-## Como ativar (1 passo)
+O workflow do APK está em `.github/workflows/build-apk.yml` (ativado em
+15/11/2026, no estilo do app Meu Player): a cada push no `main` o GitHub
+Actions compila o app web, monta o Capacitor, assina o release e publica o
+APK como artifact.
 
-```bash
-gh auth refresh -h github.com -s workflow
-```
+**Como usar:** push no `main` → aba **Actions** → **Build APK** →
+**Artifacts** → baixar `editor-apk.zip` (contém o APK assinado).
 
-Abre um código de dispositivo no navegador (é preciso estar logado no
-GitHub). Depois de autorizar, basta mover os arquivos e dar push:
+- O token precisou ganhar o escopo `workflow` (`gh auth refresh -s workflow`)
+  antes do push do arquivo de workflow.
+- Os 4 secrets `ANDROID_KEYSTORE_*` **já estão** no repositório
+  `MuelTec/editor` (keystore `editor.keystore`, alias `editor`) — a
+  assinatura é a mesma do APK instalado (instala como atualização).
 
-```bash
-cp ci/build-apk.yml ci/deploy-pages.yml .github/workflows/
-# remova a linha "/.github/workflows/" do .gitignore
-git add .github/workflows .gitignore
-git commit -m "ativa CI" && git push
-```
+## deploy-pages.yml — ainda em espera
 
-## O que cada um faz
-
-- **build-apk.yml** — Build APK: compila o app web (Vite), monta o projeto
-  Capacitor, copia os ícones, assina o release com o keystore guardado nos
-  secrets (`ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASS`,
-  `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASS`) e publica o APK como artifact.
 - **deploy-pages.yml** — Deploy Pages: publica `app/dist` no GitHub Pages
   pelo Actions (hoje o site é publicado pelo branch `gh-pages`, que já
   funciona; ao ativar este workflow, mude a fonte do Pages para
-  "GitHub Actions").
-
-Os secrets dos 4 `ANDROID_KEYSTORE_*` **já estão** no repositório
-`MuelTec/editor` (keystore `editor.keystore`, alias `editor`).
+  "GitHub Actions"). Coloque-o em `.github/workflows/` para ativá-lo.

@@ -3,10 +3,7 @@ node_modules/
 dist/
 *.local
 
-# CI: os workflows prontos estao em ci/ (podem ser copiados para
-# .github/workflows/ depois de dar ao token o escopo "workflow":
-# gh auth refresh -s workflow). Enquanto isso, o push deles e bloqueado.
-/.github/workflows/
+
 
 # Artefatos do build Android/Capacitor (gerados no CI)
 /www/
