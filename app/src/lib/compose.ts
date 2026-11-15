@@ -212,15 +212,24 @@ export interface FrameLayer {
   source: FrameSource;
   /** 0..1 — no crossfade, o clipe novo entra com alpha crescente. */
   alpha?: number;
-  /** Recorte em coordenadas do layout (transição wipe). */
-  clip?: { x: number; y: number; w: number; h: number } | null;
+  /** Recorte em coordenadas do layout (transição wipe). `circle` vira máscara redonda. */
+  clip?: { x: number; y: number; w: number; h: number; circle?: boolean } | null;
   /**
    * Deslocamento/escala da camada (Etapa 12): `scale` gira em torno do
    * centro do layout (transição zoom), `x`/`y` deslocam em px do layout
-   * (transição push) e `scaleX`/`scaleY` fazem o efeito de GIRA 3D
-   * (transição flip — cartão virando).
+   * (transição push), `scaleX`/`scaleY` fazem o efeito de GIRA 3D
+   * (transição flip — cartão virando) e `rotate` gira em radianos
+   * (transição Spin).
    */
-  transform?: { x?: number; y?: number; scale?: number; scaleX?: number; scaleY?: number };
+  transform?: {
+    x?: number;
+    y?: number;
+    scale?: number;
+    scaleX?: number;
+    scaleY?: number;
+    /** Rotação em radianos em torno do centro do layout (transição Spin). */
+    rotate?: number;
+  };
   /** Raio de desfoque em px do layout (transição blur). */
   blur?: number;
   /** Intensidade 0..1 do glitch (fatias deslocadas + tintes, Etapa 12). */
@@ -233,7 +242,7 @@ export interface FrameLayer {
   transformBg?: boolean;
 }
 
-/** Aplica o transform da camada (escala no centro + deslocamento). */
+/** Aplica o transform da camada (escala/rotação no centro + deslocamento). */
 function applyLayerTransform(
   ctx: CanvasRenderingContext2D,
   transform: NonNullable<FrameLayer['transform']>,
@@ -242,16 +251,40 @@ function applyLayerTransform(
   const scale = transform.scale ?? 1;
   const scaleX = transform.scaleX ?? 1;
   const scaleY = transform.scaleY ?? 1;
+  const rotate = transform.rotate ?? 0;
   const sx = scale * scaleX;
   const sy = scale * scaleY;
-  if (sx !== 1 || sy !== 1) {
+  if (sx !== 1 || sy !== 1 || rotate !== 0) {
     ctx.translate(m.width / 2, m.height / 2);
-    ctx.scale(sx, sy);
+    if (rotate !== 0) ctx.rotate(rotate);
+    if (sx !== 1 || sy !== 1) ctx.scale(sx, sy);
     ctx.translate(-m.width / 2, -m.height / 2);
   }
   const x = transform.x ?? 0;
   const y = transform.y ?? 0;
   if (x !== 0 || y !== 0) ctx.translate(x, y);
+}
+
+/** Aplica o recorte da camada: retângulo (wipe) ou círculo (iris). */
+function applyLayerClip(
+  ctx: CanvasRenderingContext2D,
+  clip: NonNullable<FrameLayer['clip']>,
+): void {
+  ctx.beginPath();
+  if (clip.circle) {
+    ctx.ellipse(
+      clip.x + clip.w / 2,
+      clip.y + clip.h / 2,
+      Math.abs(clip.w) / 2,
+      Math.abs(clip.h) / 2,
+      0,
+      0,
+      Math.PI * 2,
+    );
+  } else {
+    ctx.rect(clip.x, clip.y, clip.w, clip.h);
+  }
+  ctx.clip();
 }
 
 /** Pseudo-aleatório determinístico (mesmo valor pra mesma faixa). */
@@ -262,8 +295,10 @@ function bandNoise(i: number): number {
 
 /** Extras de desenho aplicados entre o conteúdo e a legenda. */
 export interface FrameExtras {
-  /** Branco full-screen com essa opacidade (transição flash). */
+  /** Véu full-screen com essa opacidade (transições flash/luz/preto). */
   flash?: number;
+  /** Cor do véu (padrão branco). Preto = transição "Escurecer". */
+  flashColor?: string;
   /**
    * Segundos desde o começo da animação de ENTRADA da legenda (Etapa 10).
    * `undefined` = desenha estático (sem animação).
@@ -338,11 +373,7 @@ export class FrameComposer {
       if (layer.transform && layer.transformBg !== false) {
         applyLayerTransform(ctx, layer.transform, m);
       }
-      if (layer.clip) {
-        ctx.beginPath();
-        ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);
-        ctx.clip();
-      }
+      if (layer.clip) applyLayerClip(ctx, layer.clip);
       drawBlurredBackground(ctx, layer.source, layerFilter, m, this.fast);
       ctx.restore();
     }
@@ -356,11 +387,7 @@ export class FrameComposer {
       ctx.save();
       ctx.globalAlpha = layer.alpha ?? 1;
       if (layer.transform) applyLayerTransform(ctx, layer.transform, m);
-      if (layer.clip) {
-        ctx.beginPath();
-        ctx.rect(layer.clip.x, layer.clip.y, layer.clip.w, layer.clip.h);
-        ctx.clip();
-      }
+      if (layer.clip) applyLayerClip(ctx, layer.clip);
       if (layer.glitch && layer.glitch > 0) {
         // GLITCH (Etapa 12/13): 1 desenho de vídeo num buffer + faixas
         // copiadas do próprio buffer — antes eram 7 desenhos de vídeo com
@@ -427,7 +454,7 @@ export class FrameComposer {
     if (extras?.flash && extras.flash > 0) {
       ctx.save();
       ctx.globalAlpha = Math.min(1, extras.flash);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = extras.flashColor ?? '#ffffff';
       ctx.fillRect(0, 0, m.width, m.height);
       ctx.restore();
     }

@@ -34,9 +34,6 @@ export default function HomeScreen({ onNewProject, onNewMontage, onTool }: Props
           <img className="home-brand-icon" src="./icon.svg" alt="" width={30} height={30} />
           <span className="home-brand-name">Estúdio</span>
         </div>
-        <span className="badge-local" title="Seu vídeo nunca sai deste dispositivo">
-          100% no seu aparelho
-        </span>
       </header>
 
       <main className="home-body">
@@ -46,8 +43,7 @@ export default function HomeScreen({ onNewProject, onNewMontage, onTool }: Props
             Faça seu próximo <span className="home-grad">vídeo 9:16</span>
           </h1>
           <p className="home-hero-sub">
-            Legenda automática, trilha na batida, filtros e transições — tudo
-            processado aqui no seu dispositivo.
+            Legenda automática, trilha na batida, filtros e transições.
           </p>
         </section>
 
@@ -100,10 +96,6 @@ export default function HomeScreen({ onNewProject, onNewMontage, onTool }: Props
           </ol>
         </section>
       </main>
-
-      <footer className="home-foot">
-        Seus arquivos nunca saem do aparelho · nada é enviado para a internet
-      </footer>
     </div>
   );
 }

@@ -72,16 +72,6 @@ button { font-family: inherit; }
   letter-spacing: -0.01em;
 }
 
-.badge-local {
-  font-size: 11px;
-  color: #3ecf8e;
-  background: rgba(62, 207, 142, 0.1);
-  border: 1px solid rgba(62, 207, 142, 0.25);
-  padding: 3px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
 .top-actions { margin-left: auto; display: flex; gap: 10px; }
 
 .btn-export {
@@ -974,7 +964,6 @@ input[type='range']::-moz-range-thumb {
 .home-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .home-brand-icon { display: block; border-radius: 8px; }
 .home-brand-name { font-weight: 800; font-size: 16px; letter-spacing: -0.01em; }
-.home-top .badge-local { margin-left: auto; }
 
 .home-body {
   position: relative;
@@ -1155,15 +1144,6 @@ input[type='range']::-moz-range-thumb {
   font-weight: 800;
   color: #17040b;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
-}
-
-.home-foot {
-  position: relative;
-  z-index: 1;
-  text-align: center;
-  padding: 16px 24px 26px;
-  font-size: 12px;
-  color: var(--text-dim);
 }
 
 @media (max-width: 760px) {

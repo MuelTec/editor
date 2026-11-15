@@ -48,7 +48,15 @@ export type TransitionId =
   | 'push'
   | 'blur'
   | 'glitch'
-  | 'flip3d';
+  | 'flip3d'
+  | 'pushVertical'
+  | 'wipeVertical'
+  | 'iris'
+  | 'spin'
+  | 'shake'
+  | 'luma'
+  | 'lightLeak'
+  | 'fadeBlack';
 
 /** Rótulos das transições pra UI (Etapa 12). */
 export const TRANSITIONS: { id: TransitionId; label: string; hint: string }[] = [
@@ -61,7 +69,21 @@ export const TRANSITIONS: { id: TransitionId; label: string; hint: string }[] = 
   { id: 'glitch', label: 'Glitch', hint: 'Corte com distorção digital' },
   { id: 'push', label: 'Deslizar', hint: 'O novo desliza empurrando o anterior' },
   { id: 'flip3d', label: 'Girar 3D', hint: 'O vídeo gira como um cartão' },
+  { id: 'pushVertical', label: 'Subir', hint: 'O novo sobe empurrando o anterior' },
+  { id: 'wipeVertical', label: 'Cortina', hint: 'O novo desce cobrindo o quadro' },
+  { id: 'iris', label: 'Círculo', hint: 'Abre num círculo a partir do centro' },
+  { id: 'spin', label: 'Rotação', hint: 'Um gira pra dentro, o outro pra fora' },
+  { id: 'shake', label: 'Tremor', hint: 'Sacudida rápida na hora da troca' },
+  { id: 'luma', label: 'Brilho', hint: 'Cruza estourando a luz no meio' },
+  { id: 'lightLeak', label: 'Luz âmbar', hint: 'Véu de luz quente na troca' },
+  { id: 'fadeBlack', label: 'Escurecer', hint: 'Apaga no preto e acende o novo' },
 ];
+
+/** Ruido pseudo-aleatório determinístico (tremor: mesma faixa = mesmo valor). */
+function shakeNoise(i: number): number {
+  const v = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+  return v - Math.floor(v);
+}
 
 export interface MontageModel {
   id: string;
@@ -509,6 +531,7 @@ export class MontageRenderer {
     if (layers.length === 0) return;
 
     let flash = 0;
+    let flashColor: string | undefined;
     if (layers.length === 2) {
       const b = active[1];
       const window = transitions[b - 1];
@@ -569,6 +592,62 @@ export class MontageRenderer {
         const w = this.layout.width;
         layers[1].transform = { x: (1 - p) * w };
         layers[0].transform = { x: -p * w };
+      } else if (this.transition === 'pushVertical') {
+        // Mesmo empurrão, mas no eixo Y: o novo sobe por cima.
+        const h = this.layout.height;
+        layers[1].transform = { y: (1 - p) * h };
+        layers[0].transform = { y: -p * h };
+      } else if (this.transition === 'wipeVertical') {
+        // Cortina descendo: o novo é revelado de cima pra baixo.
+        layers[1].clip = {
+          x: 0,
+          y: 0,
+          w: this.layout.width,
+          h: this.layout.height * p,
+        };
+      } else if (this.transition === 'iris') {
+        // Máscara redonda abrindo do centro até cobrir os cantos.
+        const w = this.layout.width;
+        const h = this.layout.height;
+        const r = (Math.hypot(w, h) / 2) * p;
+        layers[1].clip = { x: w / 2 - r, y: h / 2 - r, w: r * 2, h: r * 2, circle: true };
+        flash = Math.sin(Math.PI * p) * 0.12;
+      } else if (this.transition === 'spin') {
+        // Rotação: o novo gira pra dentro e o anterior gira pra fora.
+        // transformBg=false mantém o fundo cobrindo o quadro (mesmo truque
+        // do "Girar 3D"), senão apareceriam cantos pretos girando.
+        const angle = p * (Math.PI / 2);
+        layers[1].transform = { rotate: angle, scale: 0.92 + 0.08 * p };
+        layers[0].transform = { rotate: -angle * 0.6, scale: 1 + 0.1 * p };
+        layers[1].transformBg = false;
+        layers[0].transformBg = false;
+        layers[1].alpha = p;
+        flash = Math.max(0, 1 - Math.abs(p - 0.5) * 4) * 0.35;
+      } else if (this.transition === 'shake') {
+        // Tremor na troca, com a amplitude caindo até zerar.
+        const amp = (1 - p) * 46;
+        const step = Math.floor(p * 14);
+        const dx = (shakeNoise(step) - 0.5) * amp;
+        const dy = (shakeNoise(step + 9) - 0.5) * amp;
+        layers[1].alpha = p;
+        layers[1].transform = { x: dx, y: dy };
+        layers[0].transform = { x: -dx * 0.6, y: -dy * 0.6 };
+        flash = Math.sin(Math.PI * p) * 0.1;
+      } else if (this.transition === 'luma') {
+        // Cruza as camadas estourando a luz no meio do caminho.
+        layers[1].alpha = p;
+        layers[1].transform = { scale: 1 + 0.06 * (1 - p) };
+        flash = Math.pow(Math.sin(Math.PI * p), 3) * 0.7;
+      } else if (this.transition === 'lightLeak') {
+        // A troca acontece sob um véu de luz quente.
+        layers[1].alpha = p;
+        flash = Math.sin(Math.PI * p) * 0.85;
+        flashColor = '#ff9a3c';
+      } else if (this.transition === 'fadeBlack') {
+        // Apaga no preto e acende o clipe novo.
+        layers[1].alpha = p;
+        flash = Math.sin(Math.PI * p);
+        flashColor = '#000000';
       } else {
         // flash: corte seco no meio + luz branca no pico
         if (p < 0.5) layers.length = 1;
@@ -578,6 +657,7 @@ export class MontageRenderer {
 
     this.composer.render(ctx, layers, {
       flash,
+      flashColor,
       // Animação de entrada da legenda (Etapa 10): começa no tempo 0 da
       // montagem e dura 0,5s — prévia e arquivo usam o mesmo valor.
       animT: time,

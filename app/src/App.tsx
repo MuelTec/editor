@@ -1357,9 +1357,6 @@ export default function App() {
             ← Voltar
           </button>
         </div>
-        <span className="badge-local" title="Seu vídeo nunca sai deste dispositivo">
-          100% no seu aparelho
-        </span>
         <div className="top-actions">
           <button className="btn-export" onClick={doExport} disabled={exportDisabled}>
             {exportLabel}

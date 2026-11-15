@@ -260,6 +260,9 @@ export function startMontagePreview(
         if (gen === generation && current.guides) drawGuides(ctx);
       })
       .catch((e) => {
+        // Renderer trocado no meio do quadro (mudou transição/clipe): o quadro
+        // antigo é descartado e o novo desenha logo em seguida. Não é erro.
+        if (gen !== generation) return;
         // Antes o erro era engolido em silêncio — e a imagem parava sem aviso.
         if (now - lastErrLog > 2000) {
           lastErrLog = now;
