@@ -213,6 +213,12 @@ button { font-family: inherit; }
 }
 
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Linha de chips com miniatura: grade uniforme em vez de quebra manual. */
+.chip-row--thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+}
 
 .chip {
   padding: 6px 11px;
@@ -230,6 +236,32 @@ button { font-family: inherit; }
   background: rgba(38, 185, 255, 0.16);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Chip com miniatura de apresentação (filtros e transições) */
+.chip--thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 5px 5px 7px;
+  border-radius: 10px;
+  text-align: center;
+}
+.thumb-canvas {
+  width: 100%;
+  aspect-ratio: 240 / 150;
+  height: auto;
+  display: block;
+  border-radius: 6px;
+  background: #000;
+  /* O canvas não pode engolir o clique/hover do chip pai. */
+  pointer-events: none;
+}
+.chip-label {
+  font-size: 10.5px;
+  line-height: 1.2;
+  word-break: break-word;
 }
 
 /* Dropzone */

@@ -85,6 +85,145 @@ function shakeNoise(i: number): number {
   return v - Math.floor(v);
 }
 
+/**
+ * Aplica os efeitos de uma transição sobre as DUAS camadas da timeline
+ * (`p` = 0..1 dentro da janela da transição).
+ *
+ * Extraído do `renderFrame` pra as MINIATURAS da biblioteca rodarem o MESMO
+ * motor do arquivo final — o que você vê no chip é exatamente o efeito que
+ * sai na exportação. Muta `layers` (alpha/clip/transform/glitch) e pode
+ * reduzir pra UMA camada (corte seco no meio: flash/glitch). Devolve o véu
+ * (flash) aplicado por cima do conteúdo.
+ */
+export function applyTransition(
+  transition: TransitionId,
+  p: number,
+  layers: FrameLayer[],
+  m: FrameLayout,
+): { flash: number; flashColor?: string } {
+  let flash = 0;
+  let flashColor: string | undefined;
+  if (layers.length < 2) return { flash, flashColor };
+
+  if (transition === 'crossfade') {
+    layers[1].alpha = p;
+  } else if (transition === 'wipe') {
+    layers[1].clip = {
+      x: 0,
+      y: 0,
+      w: m.width * p,
+      h: m.height,
+    };
+  } else if (transition === 'zoom') {
+    // O novo chega aproximando (1,16 → 1) e o anterior sai ampliando.
+    layers[1].alpha = p;
+    layers[1].transform = { scale: 1 + 0.16 * (1 - p) };
+    layers[0].transform = { scale: 1 + 0.08 * p };
+  } else if (transition === 'zoomOut') {
+    // O novo cresce a partir do fundo (0,86 → 1) e o anterior recua.
+    layers[1].alpha = p;
+    layers[1].transform = { scale: 0.86 + 0.14 * p };
+    layers[0].transform = { scale: 1 - 0.08 * p };
+    layers[0].alpha = 1 - p * 0.45;
+  } else if (transition === 'blur') {
+    // O novo surge desfocado até ficar nítido; o anterior desfoca na saída.
+    layers[1].alpha = p;
+    layers[1].blur = (1 - p) * 30;
+    layers[1].transform = { scale: 1 + 0.05 * (1 - p) };
+    layers[0].blur = p * 30;
+    layers[0].alpha = 1 - p * 0.35;
+  } else if (transition === 'glitch') {
+    // Corte seco no meio mascarado por distorção digital (fatias + tintes).
+    if (p < 0.5) layers.length = 1;
+    const g = Math.sin(Math.PI * p) * 0.95;
+    layers[0].glitch = g;
+    if (layers.length > 1) layers[1].glitch = g;
+    flash = g * 0.1;
+  } else if (transition === 'flip3d') {
+    // Gira como um cartão: espreme no eixo X e dá uma leve inclinação
+    // vertical; o fundo NÃO gira (transformBg=false) — ele continua
+    // cobrindo o quadro inteiro por trás do cartão.
+    const angle = (p * Math.PI) / 2;
+    const squash = 1 - 0.12 * Math.sin(Math.PI * p);
+    layers[1].transform = { scaleX: Math.sin(angle), scaleY: squash };
+    layers[0].transform = { scaleX: Math.cos(angle), scaleY: squash };
+    layers[1].transformBg = false;
+    layers[0].transformBg = false;
+    layers[1].alpha = p;
+    // Luz no meio do giro (esconde o momento edge-on do cartão).
+    flash = Math.max(0, 1 - Math.abs(p - 0.5) * 5) * 0.55;
+  } else if (transition === 'push') {
+    // Empurrão horizontal: um cobre exatamente o vão que o outro abre.
+    layers[1].transform = { x: (1 - p) * m.width };
+    layers[0].transform = { x: -p * m.width };
+  } else if (transition === 'pushVertical') {
+    // Mesmo empurrão, mas no eixo Y: o novo sobe por cima.
+    layers[1].transform = { y: (1 - p) * m.height };
+    layers[0].transform = { y: -p * m.height };
+  } else if (transition === 'wipeVertical') {
+    // Cortina descendo: o novo é revelado de cima pra baixo.
+    layers[1].clip = {
+      x: 0,
+      y: 0,
+      w: m.width,
+      h: m.height * p,
+    };
+  } else if (transition === 'iris') {
+    // Máscara redonda abrindo do centro até cobrir os cantos.
+    const r = (Math.hypot(m.width, m.height) / 2) * p;
+    layers[1].clip = {
+      x: m.width / 2 - r,
+      y: m.height / 2 - r,
+      w: r * 2,
+      h: r * 2,
+      circle: true,
+    };
+    flash = Math.sin(Math.PI * p) * 0.12;
+  } else if (transition === 'spin') {
+    // Rotação: o novo gira pra dentro e o anterior gira pra fora.
+    // transformBg=false mantém o fundo cobrindo o quadro (mesmo truque
+    // do "Girar 3D"), senão apareceriam cantos pretos girando.
+    const angle = p * (Math.PI / 2);
+    layers[1].transform = { rotate: angle, scale: 0.92 + 0.08 * p };
+    layers[0].transform = { rotate: -angle * 0.6, scale: 1 + 0.1 * p };
+    layers[1].transformBg = false;
+    layers[0].transformBg = false;
+    layers[1].alpha = p;
+    flash = Math.max(0, 1 - Math.abs(p - 0.5) * 4) * 0.35;
+  } else if (transition === 'shake') {
+    // Tremor na troca, com a amplitude caindo até zerar.
+    const amp = (1 - p) * 46;
+    const step = Math.floor(p * 14);
+    const dx = (shakeNoise(step) - 0.5) * amp;
+    const dy = (shakeNoise(step + 9) - 0.5) * amp;
+    layers[1].alpha = p;
+    layers[1].transform = { x: dx, y: dy };
+    layers[0].transform = { x: -dx * 0.6, y: -dy * 0.6 };
+    flash = Math.sin(Math.PI * p) * 0.1;
+  } else if (transition === 'luma') {
+    // Cruza as camadas estourando a luz no meio do caminho.
+    layers[1].alpha = p;
+    layers[1].transform = { scale: 1 + 0.06 * (1 - p) };
+    flash = Math.pow(Math.sin(Math.PI * p), 3) * 0.7;
+  } else if (transition === 'lightLeak') {
+    // A troca acontece sob um véu de luz quente.
+    layers[1].alpha = p;
+    flash = Math.sin(Math.PI * p) * 0.85;
+    flashColor = '#ff9a3c';
+  } else if (transition === 'fadeBlack') {
+    // Apaga no preto e acende o clipe novo.
+    layers[1].alpha = p;
+    flash = Math.sin(Math.PI * p);
+    flashColor = '#000000';
+  } else {
+    // flash: corte seco no meio + luz branca no pico
+    if (p < 0.5) layers.length = 1;
+    flash = Math.sin(Math.PI * p) * 0.92;
+  }
+
+  return { flash, flashColor };
+}
+
 export interface MontageModel {
   id: string;
   name: string;
@@ -539,120 +678,7 @@ export class MontageRenderer {
         window > 0
           ? Math.min(1, Math.max(0, (time - clips[b].start) / window))
           : 1;
-
-      if (this.transition === 'crossfade') {
-        layers[1].alpha = p;
-      } else if (this.transition === 'wipe') {
-        layers[1].clip = {
-          x: 0,
-          y: 0,
-          w: this.layout.width * p,
-          h: this.layout.height,
-        };
-      } else if (this.transition === 'zoom') {
-        // O novo chega aproximando (1,16 → 1) e o anterior sai ampliando.
-        layers[1].alpha = p;
-        layers[1].transform = { scale: 1 + 0.16 * (1 - p) };
-        layers[0].transform = { scale: 1 + 0.08 * p };
-      } else if (this.transition === 'zoomOut') {
-        // O novo cresce a partir do fundo (0,86 → 1) e o anterior recua.
-        layers[1].alpha = p;
-        layers[1].transform = { scale: 0.86 + 0.14 * p };
-        layers[0].transform = { scale: 1 - 0.08 * p };
-        layers[0].alpha = 1 - p * 0.45;
-      } else if (this.transition === 'blur') {
-        // O novo surge desfocado até ficar nítido; o anterior desfoca na saída.
-        layers[1].alpha = p;
-        layers[1].blur = (1 - p) * 30;
-        layers[1].transform = { scale: 1 + 0.05 * (1 - p) };
-        layers[0].blur = p * 30;
-        layers[0].alpha = 1 - p * 0.35;
-      } else if (this.transition === 'glitch') {
-        // Corte seco no meio mascarado por distorção digital (fatias + tintes).
-        if (p < 0.5) layers.length = 1;
-        const g = Math.sin(Math.PI * p) * 0.95;
-        layers[0].glitch = g;
-        if (layers.length > 1) layers[1].glitch = g;
-        flash = g * 0.1;
-      } else if (this.transition === 'flip3d') {
-        // Gira como um cartão: espreme no eixo X e dá uma leve inclinação
-        // vertical; o fundo NÃO gira (transformBg=false) — ele continua
-        // cobrindo o quadro inteiro por trás do cartão.
-        const angle = (p * Math.PI) / 2;
-        const squash = 1 - 0.12 * Math.sin(Math.PI * p);
-        layers[1].transform = { scaleX: Math.sin(angle), scaleY: squash };
-        layers[0].transform = { scaleX: Math.cos(angle), scaleY: squash };
-        layers[1].transformBg = false;
-        layers[0].transformBg = false;
-        layers[1].alpha = p;
-        // Luz no meio do giro (esconde o momento edge-on do cartão).
-        flash = Math.max(0, 1 - Math.abs(p - 0.5) * 5) * 0.55;
-      } else if (this.transition === 'push') {
-        // Empurrão horizontal: um cobre exatamente o vão que o outro abre.
-        const w = this.layout.width;
-        layers[1].transform = { x: (1 - p) * w };
-        layers[0].transform = { x: -p * w };
-      } else if (this.transition === 'pushVertical') {
-        // Mesmo empurrão, mas no eixo Y: o novo sobe por cima.
-        const h = this.layout.height;
-        layers[1].transform = { y: (1 - p) * h };
-        layers[0].transform = { y: -p * h };
-      } else if (this.transition === 'wipeVertical') {
-        // Cortina descendo: o novo é revelado de cima pra baixo.
-        layers[1].clip = {
-          x: 0,
-          y: 0,
-          w: this.layout.width,
-          h: this.layout.height * p,
-        };
-      } else if (this.transition === 'iris') {
-        // Máscara redonda abrindo do centro até cobrir os cantos.
-        const w = this.layout.width;
-        const h = this.layout.height;
-        const r = (Math.hypot(w, h) / 2) * p;
-        layers[1].clip = { x: w / 2 - r, y: h / 2 - r, w: r * 2, h: r * 2, circle: true };
-        flash = Math.sin(Math.PI * p) * 0.12;
-      } else if (this.transition === 'spin') {
-        // Rotação: o novo gira pra dentro e o anterior gira pra fora.
-        // transformBg=false mantém o fundo cobrindo o quadro (mesmo truque
-        // do "Girar 3D"), senão apareceriam cantos pretos girando.
-        const angle = p * (Math.PI / 2);
-        layers[1].transform = { rotate: angle, scale: 0.92 + 0.08 * p };
-        layers[0].transform = { rotate: -angle * 0.6, scale: 1 + 0.1 * p };
-        layers[1].transformBg = false;
-        layers[0].transformBg = false;
-        layers[1].alpha = p;
-        flash = Math.max(0, 1 - Math.abs(p - 0.5) * 4) * 0.35;
-      } else if (this.transition === 'shake') {
-        // Tremor na troca, com a amplitude caindo até zerar.
-        const amp = (1 - p) * 46;
-        const step = Math.floor(p * 14);
-        const dx = (shakeNoise(step) - 0.5) * amp;
-        const dy = (shakeNoise(step + 9) - 0.5) * amp;
-        layers[1].alpha = p;
-        layers[1].transform = { x: dx, y: dy };
-        layers[0].transform = { x: -dx * 0.6, y: -dy * 0.6 };
-        flash = Math.sin(Math.PI * p) * 0.1;
-      } else if (this.transition === 'luma') {
-        // Cruza as camadas estourando a luz no meio do caminho.
-        layers[1].alpha = p;
-        layers[1].transform = { scale: 1 + 0.06 * (1 - p) };
-        flash = Math.pow(Math.sin(Math.PI * p), 3) * 0.7;
-      } else if (this.transition === 'lightLeak') {
-        // A troca acontece sob um véu de luz quente.
-        layers[1].alpha = p;
-        flash = Math.sin(Math.PI * p) * 0.85;
-        flashColor = '#ff9a3c';
-      } else if (this.transition === 'fadeBlack') {
-        // Apaga no preto e acende o clipe novo.
-        layers[1].alpha = p;
-        flash = Math.sin(Math.PI * p);
-        flashColor = '#000000';
-      } else {
-        // flash: corte seco no meio + luz branca no pico
-        if (p < 0.5) layers.length = 1;
-        flash = Math.sin(Math.PI * p) * 0.92;
-      }
+      ({ flash, flashColor } = applyTransition(this.transition, p, layers, this.layout));
     }
 
     this.composer.render(ctx, layers, {

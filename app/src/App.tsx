@@ -39,6 +39,7 @@ import {
 } from './lib/preview';
 import { toHorizontal, toVertical } from './lib/toVertical';
 import HomeScreen, { type HomeToolId } from './HomeScreen';
+import { FilterThumb, TransitionThumb } from './ThumbPreview';
 
 /**
  * EDITOR ESTILO CAPCUT (Etapa 12).
@@ -1650,15 +1651,24 @@ export default function App() {
                     >
                       Automática
                     </button>
+                  </div>
+                  <div className="chip-row chip-row--thumbs">
                     {TRANSITIONS.map((t) => (
                       <button
                         key={t.id}
                         type="button"
-                        className={`chip${customTransition === t.id ? ' chip--on' : ''}`}
+                        className={`chip chip--thumb${
+                          customTransition === t.id ? ' chip--on' : ''
+                        }`}
                         title={t.hint}
+                        aria-pressed={customTransition === t.id}
                         onClick={() => setCustomTransition(t.id)}
                       >
-                        {t.label}
+                        <TransitionThumb
+                          transition={t.id}
+                          active={customTransition === t.id}
+                        />
+                        <span className="chip-label">{t.label}</span>
                       </button>
                     ))}
                   </div>
@@ -1688,17 +1698,22 @@ export default function App() {
               ) : (
                 <>
                   <h4 className="lib-heading">Filtro de cor</h4>
-                  <div className="chip-row" role="radiogroup" aria-label="Filtro de cor">
+                  <div
+                    className="chip-row chip-row--thumbs"
+                    role="radiogroup"
+                    aria-label="Filtro de cor"
+                  >
                     {FILTERS.map((f) => (
                       <button
                         key={f.id}
                         type="button"
                         role="radio"
                         aria-checked={filter === f.id}
-                        className={`chip${filter === f.id ? ' chip--on' : ''}`}
+                        className={`chip chip--thumb${filter === f.id ? ' chip--on' : ''}`}
                         onClick={() => setFilter(f.id)}
                       >
-                        {f.label}
+                        <FilterThumb filter={f.id} />
+                        <span className="chip-label">{f.label}</span>
                       </button>
                     ))}
                   </div>
