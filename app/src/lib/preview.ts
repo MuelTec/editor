@@ -153,6 +153,9 @@ export function startMontagePreview(
 ): MontagePreview {
   const ctx = canvas.getContext('2d', { alpha: false });
   const scale = canvas.width / OUT_WIDTH;
+  // Marca de versão: se esta linha NÃO aparece no console (F12), o navegador
+  // ainda está rodando o código antigo (cache / deploy não terminou).
+  console.info('[Estúdio] prévia da montagem — correção do loop v2');
 
   let current: MontagePreviewOptions = { ...options };
   let renderer: MontageRenderer | null = null;
@@ -164,6 +167,10 @@ export function startMontagePreview(
   let lastFrame = 0; // timestamp do rAF anterior
   let drawing = false; // evita sobrepor renders assíncronos
   let generation = 0; // invalida renders de um renderer antigo
+  let rewind = false; // o loop voltou ao 0: os leitores dos clipes precisam recuar
+  let drawStarted = 0; // quando o quadro em andamento começou (watchdog)
+  let drawId = 0; // identifica o quadro em andamento
+  let lastErrLog = 0; // limita o log de erros a 1 a cada 2s
 
   const ensureRenderer = async (): Promise<void> => {
     if (stopped) return;
@@ -189,8 +196,9 @@ export function startMontagePreview(
 
   const kick = () => {
     creating = ensureRenderer()
-      .catch(() => {
+      .catch((e) => {
         // erro de leitura: a UI pode chamar update() de novo; mantém o loop vivo
+        console.error('[Estúdio] falha ao abrir os clipes da prévia:', e);
       })
       .finally(() => {
         creating = null;
@@ -211,15 +219,36 @@ export function startMontagePreview(
     if (total > 0) {
       if (!paused) {
         clock += dt;
-        if (clock >= total) clock = 0; // loop
+        if (clock >= total) {
+          clock = 0; // loop
+          rewind = true; // sem isso os clipes ficavam congelados no último quadro
+        }
       }
       // Sempre avisa a UI, MESMO pausado: é por aqui que a duração chega
       // quando a prévia nasce pausada (senão a timeline ficava 0:00/0:00).
       options.onTime?.(clock, total);
     }
 
+    // Watchdog: um quadro que não termina em 3s (decodificador preso) deixava a
+    // imagem congelada com a timeline correndo. Reabre os clipes e segue.
+    if (drawing && !creating && now - drawStarted > 3000) {
+      console.warn('[Estúdio] quadro travado há 3s — reabrindo os clipes da prévia');
+      drawing = false;
+      drawId++;
+      kick();
+      return;
+    }
     if (drawing || !renderer || creating) return;
+    // Loop: reabre o leitor de cada clipe a partir do início ANTES de desenhar.
+    // Feito aqui (e não no instante da virada) pra nunca trocar o gerador no
+    // meio de um quadro que ainda está sendo decodificado.
+    if (rewind) {
+      rewind = false;
+      renderer.seek(clock);
+    }
     drawing = true;
+    drawStarted = now;
+    const myDraw = ++drawId;
     const gen = generation;
     const t = clock;
     // Todo o compositor trabalha em coordenadas 1080×1920;
@@ -230,9 +259,16 @@ export function startMontagePreview(
       .then(() => {
         if (gen === generation && current.guides) drawGuides(ctx);
       })
-      .catch(() => {})
+      .catch((e) => {
+        // Antes o erro era engolido em silêncio — e a imagem parava sem aviso.
+        if (now - lastErrLog > 2000) {
+          lastErrLog = now;
+          console.error('[Estúdio] erro ao desenhar um quadro da prévia:', e);
+        }
+      })
       .finally(() => {
-        drawing = false;
+        // Só libera se este ainda for o quadro "atual" (o watchdog pode ter trocado).
+        if (drawId === myDraw) drawing = false;
       });
   };
 
@@ -276,7 +312,10 @@ export function startMontagePreview(
       }
       // Garante que o clock não estoura a timeline nova.
       const total = renderer?.timeline.total ?? 0;
-      if (total > 0 && clock >= total) clock = 0;
+      if (total > 0 && clock >= total) {
+        clock = 0;
+        renderer?.seek(0);
+      }
     },
     get duration() {
       return renderer?.timeline.total ?? 0;

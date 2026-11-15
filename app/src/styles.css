@@ -22,6 +22,7 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   background: var(--bg-editor);
   color: var(--text-main);
@@ -36,6 +37,7 @@ button { font-family: inherit; }
 .editor-container {
   display: grid;
   height: 100vh;
+  height: 100dvh;
   grid-template-areas:
     'topbar topbar topbar'
     'library preview inspector'
@@ -742,6 +744,7 @@ input[type='range']::-moz-range-thumb {
   gap: 5px;
   cursor: pointer;
   flex-shrink: 0;
+  touch-action: none;
 }
 
 .tl-ruler {
@@ -854,7 +857,6 @@ input[type='range']::-moz-range-thumb {
   bottom: 0;
   width: 1.5px;
   background: rgba(255, 77, 109, 0.75);
-  box-shadow: 0 0 4px rgba(255, 77, 109, 0.5);
   pointer-events: none;
   z-index: 2;
 }
@@ -920,6 +922,7 @@ input[type='range']::-moz-range-thumb {
   .editor-container {
     height: auto;
     min-height: 100vh;
+    min-height: 100dvh;
     grid-template-areas:
       'topbar'
       'preview'
@@ -932,6 +935,13 @@ input[type='range']::-moz-range-thumb {
   .library-panel, .inspector-panel { border: none; border-top: 1px solid var(--border-ui); }
   .tl-hint { display: none; }
 }
+
+/* Alvos de toque maiores em telas sensíveis ao toque (tablet/celular) */
+@media (pointer: coarse) {
+  .btn--tiny { padding: 10px 14px; min-height: 40px; }
+  .chip { min-height: 40px; }
+}
+
 /* --- Splash Screen --- */
 .splash-screen {
   position: relative;
@@ -980,4 +990,3 @@ input[type='range']::-moz-range-thumb {
   gap: 20px;
   justify-content: center;
 }
-

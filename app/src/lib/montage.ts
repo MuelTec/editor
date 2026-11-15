@@ -258,7 +258,12 @@ class ClipPlayer {
   async frameAt(localTime: number): Promise<FrameLayer['source'] | null> {
     let guard = 0;
     while (!this.finished && this.currentEnd <= localTime && guard++ < 900) {
-      const { value, done } = await this.iterator.next();
+      const it = this.iterator;
+      const { value, done } = await it.next();
+      // Um seek() trocou o gerador enquanto esperávamos: esse resultado é do
+      // gerador ANTIGO e não pode sobrescrever o estado novo (senão o clipe
+      // volta a ficar congelado no último quadro).
+      if (it !== this.iterator) continue;
       if (done || !value) {
         this.finished = true;
         break;

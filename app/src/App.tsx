@@ -118,6 +118,16 @@ const RULER_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800
 const formatTick = (seconds: number, step: number): string =>
   step < 1 ? `${seconds.toFixed(1).replace('.', ',')}s` : formatDuration(seconds);
 
+/** Devolve `value` só depois de `ms` sem mudar (evita recriar a prévia a cada tecla/pixel). */
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), ms);
+    return () => window.clearTimeout(id);
+  }, [value, ms]);
+  return debounced;
+}
+
 export default function App() {
   // ------------------------------------------------------------ projeto
   const [phase, setPhase] = useState<Phase>('idle');
@@ -146,6 +156,15 @@ export default function App() {
   const [adjust, setAdjust] = useState<Adjustments>(DEFAULT_ADJUSTMENTS);
   const [playing, setPlaying] = useState(false);
   const [singleTime, setSingleTime] = useState(0);
+  // Valores com debounce: a prévia de vídeo único só é recriada depois que
+  // você para de digitar / mexer no slider (erro 9).
+  const dCaption = useDebouncedValue(caption, 200);
+  const dFilter = useDebouncedValue(filter, 200);
+  const dAdjust = useDebouncedValue(adjust, 200);
+  /** Identifica a leitura de metadados mais recente (erro 8). */
+  const pickIdRef = useRef(0);
+  /** Arrasto na régua/trilha (scrub por toque ou mouse — erro 14). */
+  const scrubbingRef = useRef(false);
 
   // ------------------------------------------------------------ montagem
   const [clips, setClips] = useState<ClipInfo[]>([]);
@@ -203,15 +222,22 @@ export default function App() {
 
   // Analisa a música quando o arquivo é escolhido.
   useEffect(() => {
-    if (!music) {
-      setMusicAnalysis(null);
-      setMusicOffset(0);
-      return;
-    }
-    void (async () => {
-      const res = await analyzeMusic(music);
-      setMusicAnalysis(res);
-    })();
+    // Sempre que a música muda (ou sai), zera análise e início: o offset
+    // da faixa anterior podia passar da duração da nova (erro 3).
+    setMusicAnalysis(null);
+    setMusicOffset(0);
+    if (!music) return;
+    let cancelled = false;
+    analyzeMusic(music)
+      .then((res) => {
+        if (!cancelled) setMusicAnalysis(res);
+      })
+      .catch(() => {
+        if (!cancelled) setNotice('Não consegui analisar essa música. Tente outro arquivo.');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [music]);
 
   useEffect(() => {
@@ -299,10 +325,10 @@ export default function App() {
       live = startLivePreview(
         v,
         c,
-        hasCaptionText(caption) ? caption : undefined,
+        hasCaptionText(dCaption) ? dCaption : undefined,
         true,
-        filter,
-        adjust,
+        dFilter,
+        dAdjust,
         true, // fast (Etapa 13)
       );
       void v
@@ -319,7 +345,7 @@ export default function App() {
       window.clearTimeout(waitTimer);
       live?.stop();
     };
-  }, [caption, filter, adjust, mode, phase, file]);
+  }, [dCaption, dFilter, dAdjust, mode, phase, file]);
 
   // Relógio da prévia de vídeo único (alimenta o playhead da timeline).
   useEffect(() => {
@@ -478,6 +504,15 @@ export default function App() {
         : null,
     [mode, clips, currentTransitionDuration],
   );
+
+  // Batidas como elementos do DOM só quando são poucas: com centenas elas já
+  // aparecem no canvas da música e o DOM ficava pesado no tablet (erro 11).
+  const visibleBeatEls = useMemo(() => {
+    const vis = timelineBeats.filter(
+      (t) => t >= viewStartClamped && t <= viewStartClamped + viewSpan,
+    );
+    return vis.length > 120 ? [] : vis;
+  }, [timelineBeats, viewStartClamped, viewSpan]);
 
   // ------------------------------------------------------- forma de onda
   // Desenha a faixa de música NA ESCALA DA LINHA (Etapa 13): a janela
@@ -677,6 +712,12 @@ export default function App() {
     setSingleTime(v.currentTime);
   }, []);
 
+  /** Atualiza a legenda por patch FUNCIONAL: dois cliques no mesmo lote não se sobrescrevem. */
+  const patchCaption = useCallback(
+    (patch: Partial<CaptionOptions>) => setCaption((c) => ({ ...c, ...patch })),
+    [],
+  );
+
   const reset = useCallback(() => {
     setPhase('idle');
     setFile(null);
@@ -707,6 +748,19 @@ export default function App() {
     setLibTab('midia');
   }, []);
 
+  /** "Tentar de novo": se há projeto (vídeo ou clipes), volta a editar sem perder nada. */
+  const retry = useCallback(() => {
+    const hasProject =
+      (mode === 'montage' && clips.length > 0) || (mode === 'single' && !!file);
+    if (hasProject) {
+      setError(null);
+      setWarnings([]);
+      setPhase('ready');
+    } else {
+      reset();
+    }
+  }, [mode, clips.length, file, reset]);
+
   const pickFile = useCallback(
     async (picked: File | null | undefined) => {
       if (!picked) return;
@@ -717,14 +771,17 @@ export default function App() {
       }
 
       reset();
+      const myId = ++pickIdRef.current;
       setMode('single');
+      setMusic(null); // a trilha só vale na Montagem (erro 4)
       setFile(picked);
       setPhase('ready');
       setPreviewUrl(URL.createObjectURL(picked));
 
       // Lê as dimensões/duração pela prévia
+      let url: string | null = null;
       try {
-        const url = URL.createObjectURL(picked);
+        url = URL.createObjectURL(picked);
         const video = document.createElement('video');
         video.preload = 'metadata';
         video.src = url;
@@ -753,11 +810,21 @@ export default function App() {
           });
 
         await new Promise<void>((resolve, reject) => {
-          video.onloadedmetadata = () => resolve();
-          video.onerror = () => reject(new Error('metadata'));
+          // Sem isso, um codec não suportado podia travar aqui pra sempre.
+          const t = window.setTimeout(() => reject(new Error('timeout')), 8000);
+          video.onloadedmetadata = () => {
+            window.clearTimeout(t);
+            resolve();
+          };
+          video.onerror = () => {
+            window.clearTimeout(t);
+            reject(new Error('metadata'));
+          };
         });
 
         const duration = await durationOf(video);
+        // Outro vídeo foi escolhido enquanto este lia: descarta o resultado velho.
+        if (pickIdRef.current !== myId) return;
         setInfo({
           name: picked.name,
           size: picked.size,
@@ -765,10 +832,13 @@ export default function App() {
           height: video.videoHeight,
           duration,
         });
-        URL.revokeObjectURL(url);
       } catch {
         // Prévia falhou — o usuário ainda pode tentar converter
-        setInfo({ name: picked.name, size: picked.size, width: 0, height: 0, duration: 0 });
+        if (pickIdRef.current === myId) {
+          setInfo({ name: picked.name, size: picked.size, width: 0, height: 0, duration: 0 });
+        }
+      } finally {
+        if (url) URL.revokeObjectURL(url);
       }
     },
     [reset],
@@ -1164,6 +1234,21 @@ export default function App() {
     [videoTotal, zoom, viewStartClamped],
   );
 
+  /** Move a janela da linha (fração da janela visível): pan sem roda do mouse, pra tablet. */
+  const panBy = useCallback(
+    (fraction: number) => {
+      if (videoTotal <= 0) return;
+      const span = videoTotal / zoom;
+      setViewStart(
+        Math.min(
+          Math.max(0, videoTotal - span),
+          Math.max(0, viewStartClamped + fraction * span),
+        ),
+      );
+    },
+    [videoTotal, zoom, viewStartClamped],
+  );
+
   /** Volta pra linha inteira. */
   const fitView = useCallback(() => {
     setZoom(1);
@@ -1181,6 +1266,8 @@ export default function App() {
     const el = tlTracksRef.current;
     if (!el || videoTotal <= 0) return;
     const onWheel = (e: WheelEvent) => {
+      // Sem zoom e sem Ctrl não há o que mover: deixa a página rolar.
+      if (!(e.ctrlKey || e.metaKey) && zoom <= 1) return;
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       const width = Math.max(1, rect.width);
@@ -1222,7 +1309,7 @@ export default function App() {
           <img className="brand-icon" src="./icon.svg" alt="" width={26} height={26} />
           <span className="brand-name">Estúdio</span>
           {phase !== 'idle' && (
-            <button className="btn btn--back" onClick={reset}>
+            <button className="btn btn--back" onClick={reset} disabled={working}>
               ← Voltar
             </button>
           )}
@@ -1613,7 +1700,18 @@ export default function App() {
           )}
 
           {/* ---------------- ABA ÁUDIO ---------------- */}
-          {libTab === 'audio' && (
+          {libTab === 'audio' && mode === 'single' && (
+            <>
+              <h4 className="lib-heading">Trilha sonora</h4>
+              <p className="muted">
+                A trilha sonora com batidas funciona na <strong>Montagem</strong>. No
+                modo Vídeo único o áudio original do vídeo é mantido. Troque o modo na
+                aba Mídia (tela inicial) para usar música.
+              </p>
+            </>
+          )}
+
+          {libTab === 'audio' && mode === 'montage' && (
             <>
               <h4 className="lib-heading">Trilha sonora</h4>
               <input
@@ -1861,6 +1959,7 @@ export default function App() {
                 src={resultUrl}
                 controls
                 autoPlay
+                muted
                 loop
                 playsInline
               />
@@ -1890,6 +1989,13 @@ export default function App() {
                 ← {mode === 'montage' ? 'Voltar e editar' : 'Novo vídeo'}
               </button>
             </div>
+            {warnings.length > 0 && (
+              <ul className="warnings">
+                {warnings.map((w) => (
+                  <li key={w}>⚠ {w}</li>
+                ))}
+              </ul>
+            )}
           </>
         )}
 
@@ -1898,7 +2004,7 @@ export default function App() {
           <div className="error-box">
             <h3>Não deu certo 😕</h3>
             <p>{error}</p>
-            <button className="btn-export" onClick={reset}>
+            <button className="btn-export" onClick={retry}>
               Tentar de novo
             </button>
           </div>
@@ -1957,9 +2063,10 @@ export default function App() {
                     max={max}
                     step={stepSize}
                     value={adjust[key]}
-                    onChange={(e) =>
-                      setAdjust({ ...adjust, [key]: Number(e.target.value) })
-                    }
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setAdjust((a) => ({ ...a, [key]: val }));
+                    }}
                     aria-label={label}
                   />
                 </label>
@@ -1988,7 +2095,7 @@ export default function App() {
                 rows={2}
                 value={caption.title}
                 placeholder="Ex.: A moto dos sonhos"
-                onChange={(e) => setCaption({ ...caption, title: e.target.value })}
+                onChange={(e) => patchCaption({ title: e.target.value })}
               />
             </label>
             <label className="field field--block">
@@ -1997,7 +2104,7 @@ export default function App() {
                 type="text"
                 value={caption.subtitle}
                 placeholder="Opcional — detalhe ou chamada"
-                onChange={(e) => setCaption({ ...caption, subtitle: e.target.value })}
+                onChange={(e) => patchCaption({ subtitle: e.target.value })}
               />
             </label>
             <div className="form-grid-2">
@@ -2006,10 +2113,7 @@ export default function App() {
                 <select
                   value={caption.position}
                   onChange={(e) =>
-                    setCaption({
-                      ...caption,
-                      position: e.target.value as CaptionOptions['position'],
-                    })
+                    patchCaption({ position: e.target.value as CaptionOptions['position'] })
                   }
                 >
                   {POSITION_OPTIONS.map((o) => (
@@ -2024,10 +2128,7 @@ export default function App() {
                 <select
                   value={caption.font}
                   onChange={(e) =>
-                    setCaption({
-                      ...caption,
-                      font: e.target.value as CaptionOptions['font'],
-                    })
+                    patchCaption({ font: e.target.value as CaptionOptions['font'] })
                   }
                 >
                   {FONT_OPTIONS.map((o) => (
@@ -2042,10 +2143,7 @@ export default function App() {
                 <select
                   value={caption.color}
                   onChange={(e) =>
-                    setCaption({
-                      ...caption,
-                      color: e.target.value as CaptionOptions['color'],
-                    })
+                    patchCaption({ color: e.target.value as CaptionOptions['color'] })
                   }
                 >
                   {COLOR_OPTIONS.map((o) => (
@@ -2060,10 +2158,7 @@ export default function App() {
                 <select
                   value={caption.align}
                   onChange={(e) =>
-                    setCaption({
-                      ...caption,
-                      align: e.target.value as CaptionOptions['align'],
-                    })
+                    patchCaption({ align: e.target.value as CaptionOptions['align'] })
                   }
                 >
                   {ALIGN_OPTIONS.map((o) => (
@@ -2078,10 +2173,7 @@ export default function App() {
                 <select
                   value={caption.effect}
                   onChange={(e) =>
-                    setCaption({
-                      ...caption,
-                      effect: e.target.value as CaptionOptions['effect'],
-                    })
+                    patchCaption({ effect: e.target.value as CaptionOptions['effect'] })
                   }
                 >
                   {EFFECT_OPTIONS.map((o) => (
@@ -2096,10 +2188,7 @@ export default function App() {
                 <select
                   value={caption.anim}
                   onChange={(e) =>
-                    setCaption({
-                      ...caption,
-                      anim: e.target.value as CaptionOptions['anim'],
-                    })
+                    patchCaption({ anim: e.target.value as CaptionOptions['anim'] })
                   }
                 >
                   {ANIM_OPTIONS.map((o) => (
@@ -2115,7 +2204,7 @@ export default function App() {
               <input
                 type="checkbox"
                 checked={caption.uppercase}
-                onChange={(e) => setCaption({ ...caption, uppercase: e.target.checked })}
+                onChange={(e) => patchCaption({ uppercase: e.target.checked })}
               />
               Caixa alta
             </label>
@@ -2131,7 +2220,7 @@ export default function App() {
                       className={`swatch${caption.effectColor === c ? ' swatch--on' : ''}`}
                       style={{ background: c }}
                       aria-label={`Cor ${c}`}
-                      onClick={() => setCaption({ ...caption, effectColor: c })}
+                      onClick={() => patchCaption({ effectColor: c })}
                     />
                   ))}
                 </div>
@@ -2159,10 +2248,10 @@ export default function App() {
                     aria-pressed={on}
                     className={`chip${on ? ' chip--on' : ''}`}
                     onClick={() =>
-                      setExtraRatios(
-                        on
-                          ? extraRatios.filter((x) => x !== r.id)
-                          : [...extraRatios, r.id],
+                      setExtraRatios((prev) =>
+                        prev.includes(r.id)
+                          ? prev.filter((x) => x !== r.id)
+                          : [...prev, r.id],
                       )
                     }
                   >
@@ -2294,18 +2383,57 @@ export default function App() {
             >
               Ajustar
             </button>
+            <button
+              className="btn btn--tiny"
+              onClick={() => panBy(-0.5)}
+              disabled={videoTotal <= 0 || zoom <= 1}
+              aria-label="Mover a linha do tempo para trás"
+              title="Mover para trás"
+            >
+              ◀
+            </button>
+            <button
+              className="btn btn--tiny"
+              onClick={() => panBy(0.5)}
+              disabled={videoTotal <= 0 || zoom <= 1}
+              aria-label="Mover a linha do tempo para frente"
+              title="Mover para frente"
+            >
+              ▶
+            </button>
           </span>
 
           <span className="tl-hint">
             {mode === 'montage'
-              ? 'clique na régua para navegar · Ctrl+role = zoom só na linha · arraste a onda para ajustar a música'
-              : 'clique na régua para navegar · Ctrl+role = zoom só na linha'}
+              ? 'clique ou arraste na régua para navegar · Ctrl+role = zoom só na linha · arraste a onda para ajustar a música'
+              : 'clique ou arraste na régua para navegar · Ctrl+role = zoom só na linha'}
           </span>
         </div>
 
         <div className="timeline-tracks" ref={tlTracksRef}>
           {/* Régua + trilha de vídeo (mesma escala/janela visível) */}
-          <div className="tl-stack" onClick={seekFromEvent} role="presentation">
+          <div
+            className="tl-stack"
+            role="presentation"
+            onPointerDown={(e) => {
+              scrubbingRef.current = true;
+              try {
+                e.currentTarget.setPointerCapture(e.pointerId);
+              } catch {
+                /* ponteiro sintético: segue sem captura */
+              }
+              seekFromEvent(e);
+            }}
+            onPointerMove={(e) => {
+              if (scrubbingRef.current) seekFromEvent(e);
+            }}
+            onPointerUp={() => {
+              scrubbingRef.current = false;
+            }}
+            onPointerCancel={() => {
+              scrubbingRef.current = false;
+            }}
+          >
             <div className="tl-ruler">
               {rulerTicks.map((t) => (
                 <span key={t} className="tl-tick" style={{ left: `${posPct(t)}%` }}>
@@ -2382,9 +2510,7 @@ export default function App() {
 
               {/* Batidas da música destacadas — só as visíveis na janela */}
               {mode === 'montage' &&
-                timelineBeats
-                  .filter((t) => t >= viewStartClamped && t <= viewStartClamped + viewSpan)
-                  .map((t) => (
+                visibleBeatEls.map((t) => (
                     <span
                       key={`beat-${t}`}
                       className="tl-beat"
