@@ -38,6 +38,7 @@ import {
   type MontagePreview,
 } from './lib/preview';
 import { toHorizontal, toVertical } from './lib/toVertical';
+import HomeScreen, { type HomeToolId } from './HomeScreen';
 
 /**
  * EDITOR ESTILO CAPCUT (Etapa 12).
@@ -1308,6 +1309,43 @@ export default function App() {
     else void generateMontage();
   };
 
+  /** Atalho da tela inicial: abre o editor já na aba certa. */
+  const openTool = (id: HomeToolId) => {
+    const needsVideo = id === 'legendas' || id === 'ajustes';
+    setMode('single');
+    setPhase('ready');
+    setLibTab(id === 'musica' ? 'audio' : id === 'filtros' ? 'modelos' : 'midia');
+    if (needsVideo) setInspTab(id === 'legendas' ? 'legenda' : 'ajustes');
+    if (file) setNotice(null);
+    else if (needsVideo)
+      setNotice('Escolha um vídeo primeiro — depois é só trocar de aba aí em cima.');
+    else setNotice('Ainda não tem vídeo: abra a aba Mídia e escolha um arquivo.');
+  };
+
+  // Tela inicial (estilo CapCut): enquanto não existe projeto não montamos o
+  // editor. `reset()` volta pra cá, então "Voltar" e "Novo vídeo" também caem aqui.
+  if (phase === 'idle') {
+    return (
+      <HomeScreen
+        onNewProject={() => {
+          setMode('single');
+          setPhase('ready');
+          setLibTab('midia');
+          setInspTab('ajustes');
+          setNotice(null);
+        }}
+        onNewMontage={() => {
+          setMode('montage');
+          setPhase('ready');
+          setLibTab('midia');
+          setInspTab('ajustes');
+          setNotice(null);
+        }}
+        onTool={openTool}
+      />
+    );
+  }
+
   return (
     <div className="editor-container">
       {/* ============================ 1. TOPBAR ============================ */}
@@ -1315,11 +1353,9 @@ export default function App() {
         <div className="brand">
           <img className="brand-icon" src="./icon.svg" alt="" width={26} height={26} />
           <span className="brand-name">Estúdio</span>
-          {phase !== 'idle' && (
-            <button className="btn btn--back" onClick={reset} disabled={working}>
-              ← Voltar
-            </button>
-          )}
+          <button className="btn btn--back" onClick={reset} disabled={working}>
+            ← Voltar
+          </button>
         </div>
         <span className="badge-local" title="Seu vídeo nunca sai deste dispositivo">
           100% no seu aparelho
@@ -1333,36 +1369,7 @@ export default function App() {
 
       {/* ============================ 2. LIBRARY =========================== */}
       <aside className="library-panel">
-        {phase === 'idle' ? (
-          <div className="splash-screen">
-            <div className="splash-gradient" />
-            <div className="splash-content">
-              <h1>GTA VI <br/>Editor</h1>
-              <p>Crie vídeos épicos com o estilo da próxima geração.</p>
-              <div className="splash-actions">
-                <button
-                  className="btn btn--primary btn--big"
-                  onClick={() => {
-                    setMode('single');
-                    setPhase('ready');
-                  }}
-                >
-                  Novo Projeto
-                </button>
-                <button
-                  className="btn btn--accent btn--big"
-                  onClick={() => {
-                    setMode('montage');
-                    setPhase('ready');
-                  }}
-                >
-                  Nova Montagem
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
+        <>
             <div className="library-tabs" role="tablist">
               {(
                 [
@@ -1825,8 +1832,7 @@ export default function App() {
           )}
         </div>
 
-          </>
-        )}
+        </>
 
         {/* Inputs sempre montados (fora das abas) */}
         <input
@@ -1856,17 +1862,6 @@ export default function App() {
 
       {/* ============================ 3. PREVIEW =========================== */}
       <main className="preview-panel">
-        {/* ---------- HERO (vazio) ---------- */}
-        {phase === 'idle' && (
-          <div className="hero">
-            <img className="hero-icon" src="./icon.svg" alt="" width={96} height={96} />
-            <h2>Crie com Estilo</h2>
-            <p>
-              Tudo pronto para começar. Escolha um modo acima para iniciar sua edição.
-            </p>
-          </div>
-        )}
-
         {/* ---------- VÍDEO ÚNICO ---------- */}
         {singleReady && (
           <>
