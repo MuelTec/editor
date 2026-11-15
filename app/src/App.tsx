@@ -1258,6 +1258,9 @@ export default function App() {
   const working = phase === 'working';
   const montageReady = phase === 'ready' && mode === 'montage';
   const singleReady = phase === 'ready' && mode === 'single' && !!file;
+  // Splash fechada mas ainda sem vídeo: era o "estado vazio" que antes vivia no
+  // `idle`. Sem isso o "Novo Projeto" caía numa tela em branco, sem dropzone.
+  const emptyState = phase === 'ready' && !file && clips.length === 0;
 
   // Zoom/pan da linha pelo scroll (Etapa 13): Ctrl+role = zoom NO CURSOR,
   // role = pan. `passive:false` porque o preventDefault trava o scroll da
@@ -1288,7 +1291,11 @@ export default function App() {
   }, [videoTotal, zoom, viewStartClamped, zoomBy]);
 
   const exportDisabled =
-    working || phase === 'idle' || phase === 'error' || (mode === 'montage' && clips.length === 0);
+    working ||
+    phase === 'idle' ||
+    phase === 'error' ||
+    (mode === 'single' && !file) ||
+    (mode === 'montage' && clips.length === 0);
 
   const exportLabel = working
     ? 'Processando…'
@@ -1386,7 +1393,7 @@ export default function App() {
               {/* ---------------- ABA MÍDIA ---------------- */}
               {libTab === 'midia' && (
                 <>
-                  {(phase === 'idle' || phase === 'error') && (
+                  {(emptyState || phase === 'error') && (
                     <div className="mode-row" role="radiogroup" aria-label="Modo de trabalho">
                       <button
                         type="button"
@@ -1394,7 +1401,8 @@ export default function App() {
                         aria-checked={mode === 'single'}
                         className={`mode-chip${mode === 'single' ? ' mode-chip--on' : ''}`}
                         onClick={() => {
-                          reset();
+                          if (file || clips.length > 0) reset();
+                          else setPhase('ready');
                           setMode('single');
                         }}
                       >
@@ -1406,7 +1414,8 @@ export default function App() {
                         aria-checked={mode === 'montage'}
                         className={`mode-chip${mode === 'montage' ? ' mode-chip--on' : ''}`}
                         onClick={() => {
-                          reset();
+                          if (file || clips.length > 0) reset();
+                          else setPhase('ready');
                           setMode('montage');
                         }}
                       >
@@ -1415,7 +1424,7 @@ export default function App() {
                     </div>
                   )}
 
-              {(phase === 'idle' || phase === 'error') && (
+              {(emptyState || phase === 'error') && (
                 <section
                   className={`dropzone ${isDragging ? 'dropzone--active' : ''}`}
                   onDragOver={(e) => {
@@ -1815,6 +1824,9 @@ export default function App() {
             </>
           )}
         </div>
+
+          </>
+        )}
 
         {/* Inputs sempre montados (fora das abas) */}
         <input
