@@ -1,0 +1,373 @@
+import { FrameComposer } from './compose';
+import type { TextClip } from './textTrack';
+import type { Adjustments, FilterId } from './filters';
+import {
+  OUT_HEIGHT,
+  OUT_WIDTH,
+  SAFE_BOTTOM,
+  SAFE_TOP,
+  SIDE_MARGIN,
+  VERTICAL_LAYOUT,
+} from './format';
+import { MontageRenderer, type MontageClip, type TransitionId } from './montage';
+
+/**
+ * Prévia AO VIVO do resultado (Etapa 4): o MESMO compositor do export rodando
+ * em cima do `<video>` — fundo borrado + vídeo nítido + legenda com efeitos.
+ * Ou seja: o que você vê é literalmente o que sai no arquivo.
+ *
+ * As linhas tracejadas mostram as zonas seguras do Instagram (só na prévia,
+ * elas nunca entram no arquivo exportado).
+ */
+
+export interface LivePreviewUpdate {
+  texts?: TextClip[];
+  filter?: FilterId;
+  adjust?: Adjustments;
+}
+
+export interface LivePreview {
+  stop(): void;
+  /**
+   * Troca textos/filtro/ajustes SEM recriar a prévia — assim o vídeo não volta
+   * a tocar sozinho enquanto você edita (essencial pra olhar quadro a quadro).
+   */
+  update(next: LivePreviewUpdate): void;
+}
+
+/** Tamanho do canvas de prévia — meia escala do export (1080×1920). */
+export const PREVIEW_WIDTH = 540;
+export const PREVIEW_HEIGHT = 960;
+
+function drawGuides(ctx: CanvasRenderingContext2D): void {
+  ctx.save();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+  ctx.setLineDash([18, 14]);
+
+  ctx.beginPath();
+  ctx.moveTo(0, SAFE_TOP);
+  ctx.lineTo(OUT_WIDTH, SAFE_TOP);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(0, OUT_HEIGHT - SAFE_BOTTOM);
+  ctx.lineTo(OUT_WIDTH, OUT_HEIGHT - SAFE_BOTTOM);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+  ctx.font = '700 40px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.fillText('fim da zona segura', SIDE_MARGIN, SAFE_TOP - 22);
+  ctx.fillText('fim da zona segura', SIDE_MARGIN, OUT_HEIGHT - SAFE_BOTTOM + 58);
+  ctx.restore();
+}
+
+/**
+ * Inicia a prévia animada. Chame `stop()` na limpeza do efeito.
+ * O canvas deve ter as dimensões declaradas em `PREVIEW_WIDTH/HEIGHT`.
+ */
+export function startLivePreview(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  texts?: TextClip[],
+  guides = false,
+  filter: FilterId = 'none',
+  adjust?: Adjustments,
+  /** Prévia: caminho reduzido do blur (leve em tablets — Etapa 13). */
+  fast = false,
+): LivePreview {
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) return { stop: () => {}, update: () => {} };
+
+  // Cada bloco de texto monta a sua camada quando entra no ar; trocar
+  // textos/filtro/ajustes só troca o compositor (barato).
+  let curTexts = texts;
+  let curFilter = filter;
+  let curAdjust = adjust;
+  let composer = new FrameComposer(curTexts, curFilter, VERTICAL_LAYOUT, curAdjust, fast);
+  const scale = canvas.width / OUT_WIDTH;
+  let raf = 0;
+  let stopped = false;
+
+  const draw = () => {
+    if (stopped) return;
+    raf = requestAnimationFrame(draw);
+
+    if (video.readyState < 2 || !video.videoWidth) return;
+    if (document.hidden) return;
+
+    // Todo o compositor trabalha em coordenadas 1080×1920;
+    // a transformação só reduz o desenho pro tamanho do canvas de prévia.
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    composer.render(
+      ctx,
+      [
+        {
+          source: {
+            width: video.videoWidth,
+            height: video.videoHeight,
+            draw: (c, dx, dy, dw, dh) => c.drawImage(video, dx, dy, dw, dh),
+          },
+        },
+      ],
+      // O tempo do vídeo decide quais textos estão no ar (e a animação de entrada).
+      { time: video.currentTime },
+    );
+    if (guides) drawGuides(ctx);
+  };
+
+  draw();
+
+  return {
+    stop: () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+    },
+    update: (next: LivePreviewUpdate) => {
+      const rebuild =
+        (next.filter !== undefined && next.filter !== curFilter) ||
+        (next.adjust !== undefined && next.adjust !== curAdjust);
+      if (next.texts !== undefined) curTexts = next.texts;
+      if (next.filter !== undefined) curFilter = next.filter;
+      if (next.adjust !== undefined) curAdjust = next.adjust;
+      if (rebuild) {
+        composer = new FrameComposer(curTexts, curFilter, VERTICAL_LAYOUT, curAdjust, fast);
+      } else {
+        // Só os textos mudaram: mantém o compositor e as camadas (arrastar fica leve).
+        composer.setTexts(curTexts);
+      }
+    },
+  };
+}
+
+// ------------------------------------------------- prévia da montagem (Etapa 6)
+
+export interface MontagePreviewOptions {
+  clips: MontageClip[];
+  transition: TransitionId;
+  transitionDuration: number;
+  filter: FilterId;
+  /** Blocos de texto da trilha de texto. */
+  texts?: TextClip[];
+  /** Ajustes finos de imagem (Etapa 10). */
+  adjust?: Adjustments;
+  guides?: boolean;
+  /**
+   * Caminho reduzido do blur (Etapa 13): em tablets/Android WebView o
+   * `ctx.filter = blur(42px)` em 1080×1920 derruba o quadro durante as
+   * transições. A prévia usa `true`; o export continua na qualidade cheia.
+   */
+  fast?: boolean;
+  /**
+   * De onde a prévia começa (s). A prévia é recriada quando os clipes mudam
+   * (dividir, cortar, excluir...): com isso o cursor fica onde estava, em vez
+   * de voltar ao 0:00.
+   */
+  startTime?: number;
+  /** (tempoAtual, duração) em segundos — pra barra de posição da UI. */
+  onTime?: (time: number, duration: number) => void;
+}
+
+export interface MontagePreview {
+  stop(): void;
+  setPaused(paused: boolean): void;
+  seek(time: number): void;
+  /** Recria o renderer (trocou modelo/filtro ou a lista de clipes); textos entram a quente. */
+  update(options: Partial<MontagePreviewOptions>): Promise<void>;
+  readonly duration: number;
+  /** Tempo EXATO (s) em que a prévia está agora — a UI só recebe 10 atualizações por segundo. */
+  readonly time: number;
+}
+
+/**
+ * Prévia da MONTAGEM: o MESMO `MontageRenderer` do export rodando em rAF com
+ * um relógio próprio (loop no fim), desenhando quadro a quadro com as
+ * transições reais — o que você vê é o que sai no arquivo.
+ */
+export function startMontagePreview(
+  canvas: HTMLCanvasElement,
+  options: MontagePreviewOptions,
+): MontagePreview {
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const scale = canvas.width / OUT_WIDTH;
+  // Marca de versão: se esta linha NÃO aparece no console (F12), o navegador
+  // ainda está rodando o código antigo (cache / deploy não terminou).
+  console.info('[Estúdio] prévia da montagem — correção do loop v2');
+
+  let current: MontagePreviewOptions = { ...options };
+  let renderer: MontageRenderer | null = null;
+  let creating: Promise<void> | null = null;
+  let raf = 0;
+  let stopped = false;
+  let paused = false;
+  let clock = Math.max(0, options.startTime ?? 0); // tempo da montagem (s)
+  let lastFrame = 0; // timestamp do rAF anterior
+  let drawing = false; // evita sobrepor renders assíncronos
+  let generation = 0; // invalida renders de um renderer antigo
+  let rewind = false; // o loop voltou ao 0: os leitores dos clipes precisam recuar
+  let drawStarted = 0; // quando o quadro em andamento começou (watchdog)
+  let drawId = 0; // identifica o quadro em andamento
+  let lastErrLog = 0; // limita o log de erros a 1 a cada 2s
+
+  const ensureRenderer = async (): Promise<void> => {
+    if (stopped) return;
+    const gen = ++generation;
+    const next = await MontageRenderer.create({
+      clips: current.clips,
+      transition: current.transition,
+      transitionDuration: current.transitionDuration,
+      filter: current.filter,
+      texts: current.texts,
+      adjust: current.adjust,
+      fast: current.fast,
+      startTime: clock,
+    });
+    if (stopped || gen !== generation) {
+      await next.dispose();
+      return;
+    }
+    const old = renderer;
+    renderer = next;
+    // A timeline pode ter ficado mais curta (cortou/excluiu): o cursor não passa do fim.
+    if (next.timeline.total > 0 && clock >= next.timeline.total) {
+      clock = 0;
+      rewind = true;
+    }
+    await old?.dispose();
+  };
+
+  const kick = () => {
+    creating = ensureRenderer()
+      .catch((e) => {
+        // erro de leitura: a UI pode chamar update() de novo; mantém o loop vivo
+        console.error('[Estúdio] falha ao abrir os clipes da prévia:', e);
+      })
+      .finally(() => {
+        creating = null;
+      });
+  };
+
+  kick();
+
+  const drawFrame = (now: number) => {
+    if (stopped) return;
+    raf = requestAnimationFrame(drawFrame);
+    if (!ctx || document.hidden) return;
+
+    const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 0;
+    lastFrame = now;
+
+    const total = renderer?.timeline.total ?? 0;
+    if (total > 0) {
+      if (!paused) {
+        clock += dt;
+        if (clock >= total) {
+          clock = 0; // loop
+          rewind = true; // sem isso os clipes ficavam congelados no último quadro
+        }
+      }
+      // Sempre avisa a UI, MESMO pausado: é por aqui que a duração chega
+      // quando a prévia nasce pausada (senão a timeline ficava 0:00/0:00).
+      options.onTime?.(clock, total);
+    }
+
+    // Watchdog: um quadro que não termina em 3s (decodificador preso) deixava a
+    // imagem congelada com a timeline correndo. Reabre os clipes e segue.
+    if (drawing && !creating && now - drawStarted > 3000) {
+      console.warn('[Estúdio] quadro travado há 3s — reabrindo os clipes da prévia');
+      drawing = false;
+      drawId++;
+      kick();
+      return;
+    }
+    if (drawing || !renderer || creating) return;
+    // Loop: reabre o leitor de cada clipe a partir do início ANTES de desenhar.
+    // Feito aqui (e não no instante da virada) pra nunca trocar o gerador no
+    // meio de um quadro que ainda está sendo decodificado.
+    if (rewind) {
+      rewind = false;
+      renderer.seek(clock);
+    }
+    drawing = true;
+    drawStarted = now;
+    const myDraw = ++drawId;
+    const gen = generation;
+    const t = clock;
+    // Todo o compositor trabalha em coordenadas 1080×1920;
+    // a transformação só reduz o desenho pro tamanho do canvas de prévia.
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    renderer
+      .renderFrame(ctx, t)
+      .then(() => {
+        if (gen === generation && current.guides) drawGuides(ctx);
+      })
+      .catch((e) => {
+        // Renderer trocado no meio do quadro (mudou transição/clipe): o quadro
+        // antigo é descartado e o novo desenha logo em seguida. Não é erro.
+        if (gen !== generation) return;
+        // Antes o erro era engolido em silêncio — e a imagem parava sem aviso.
+        if (now - lastErrLog > 2000) {
+          lastErrLog = now;
+          console.error('[Estúdio] erro ao desenhar um quadro da prévia:', e);
+        }
+      })
+      .finally(() => {
+        // Só libera se este ainda for o quadro "atual" (o watchdog pode ter trocado).
+        if (drawId === myDraw) drawing = false;
+      });
+  };
+
+  raf = requestAnimationFrame(drawFrame);
+
+  return {
+    stop: () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      const r = renderer;
+      renderer = null;
+      void r?.dispose();
+    },
+    setPaused: (p: boolean) => {
+      paused = p;
+      lastFrame = 0;
+    },
+    seek: (time: number) => {
+      clock = Math.max(0, time);
+      lastFrame = 0;
+      renderer?.seek(clock);
+    },
+    update: async (next: Partial<MontagePreviewOptions>) => {
+      const clipsChanged = next.clips && next.clips !== current.clips;
+      const timelineChanged =
+        (next.transition && next.transition !== current.transition) ||
+        (next.transitionDuration !== undefined &&
+          next.transitionDuration !== current.transitionDuration);
+      current = { ...current, ...next };
+      // A timeline muda quando a lista (ou o trim) ou a transição mudam →
+      // reabre os clipes. Legenda/filtro dão pra trocar quente.
+      if (clipsChanged || timelineChanged) {
+        kick();
+        await creating;
+      } else if (renderer) {
+        renderer.update({
+          texts: current.texts,
+          filter: current.filter,
+          adjust: current.adjust,
+        });
+      }
+      // Garante que o clock não estoura a timeline nova.
+      const total = renderer?.timeline.total ?? 0;
+      if (total > 0 && clock >= total) {
+        clock = 0;
+        renderer?.seek(0);
+      }
+    },
+    get duration() {
+      return renderer?.timeline.total ?? 0;
+    },
+    get time() {
+      return clock;
+    },
+  };
+}
