@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -32,12 +34,7 @@ jobs:
           npx cap add android
 
       - name: Adicionar icones ao Android
-        run: |
-          for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
-            dpi="${d%%:*}"
-            mkdir -p "android/app/src/main/res/mipmap-$dpi"
-            cp "app/public/icons/android-$dpi.png" "android/app/src/main/res/mipmap-$dpi/ic_launcher.png"
-          done
+        run: node android_overlay/launcher_icons.js
 
       - name: Sincronizar Android
         run: npx cap sync android
@@ -57,3 +54,14 @@ jobs:
         with:
           name: editor-apk
           path: android/app/build/outputs/apk/release/app-release.apk
+
+      # A release v1.0 sempre recebe o APK mais novo (link do README)
+      - name: Publicar APK na Release
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk editor-v1.0.apk
+          gh release view v1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create v1.0 --repo "$GITHUB_REPOSITORY" --title "Editor v1.0" \
+              --notes "APK gerado automaticamente pelo workflow Build APK."
+          gh release upload v1.0 editor-v1.0.apk --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

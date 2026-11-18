@@ -58,7 +58,7 @@ function lerp(a, b, t) {
   return Math.round(a + (b - a) * Math.min(1, Math.max(0, t)));
 }
 
-function drawIcon(size) {
+function renderIcon(size) {
   const px = Buffer.alloc(size * size * 4);
   const S = size;
 
@@ -192,7 +192,30 @@ function drawIcon(size) {
     }
   }
 
+  return { px, S };
+}
+
+function drawIcon(size) {
+  const { px, S } = renderIcon(size);
   return encodePNG(S, S, px);
+}
+
+// ---------- Ícone adaptativo do Android (ic_launcher_foreground) ----------
+// O Android 8+ usa o XML de mipmap-anydpi-v26 em vez dos PNGs legados.
+// Ele pede um foreground de 108dp (por densidade) onde só a "zona segura"
+// central (~72dp) fica visível sob a máscara do launcher. Renderizamos o
+// ícone inteiro reduzido para caber nessa zona, com fundo transparente.
+const ADAPTIVE_SCALE = 0.7;
+
+function drawIconForeground(size) {
+  const inner = Math.round(size * ADAPTIVE_SCALE);
+  const { px, S } = renderIcon(inner);
+  const canvas = Buffer.alloc(size * size * 4); // transparente
+  const off = Math.round((size - S) / 2);
+  for (let y = 0; y < S; y++) {
+    px.copy(canvas, ((off + y) * size + off) * 4, y * S * 4, (y + 1) * S * 4);
+  }
+  return encodePNG(size, size, canvas);
 }
 
 // ---------- SVG ultra limpo e moderno ----------
@@ -223,6 +246,14 @@ const SVG_CONTENT = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 51
   <path d="M236 212 L308 256 L236 300 Z" fill="#ffffff" filter="drop-shadow(0px 4px 12px rgba(0,0,0,0.3))"/>
 </svg>`;
 
+// Foreground do icone adaptativo do Android (mipmap-*/ic_launcher_foreground.png)
+const dpiPx = [['mdpi', 108], ['hdpi', 162], ['xhdpi', 216], ['xxhdpi', 324], ['xxxhdpi', 432]];
+const foregroundTargets = dpiPx.map(([dpi, px]) => [
+  `android_overlay/launcher/mipmap-${dpi}/ic_launcher_foreground.png`,
+  px,
+  'foreground',
+]);
+
 const targets = [
   ['app/public/icon.svg', 'svg'],
   ['app/public/icons/icon-192.png', 192],
@@ -234,14 +265,23 @@ const targets = [
   ['app/public/icons/android-xhdpi.png', 96],
   ['app/public/icons/android-xxhdpi.png', 144],
   ['app/public/icons/android-xxxhdpi.png', 192],
+  ...foregroundTargets,
 ];
 
-for (const [rel, size] of targets) {
+// Filtro opcional: `node scripts/gen-icons.mjs foreground` só regenera os
+// arquivos cujo caminho contém o texto (útil para não tocar nos ícones já existentes).
+const filter = process.argv[2];
+
+for (const [rel, size, kind] of targets) {
+  if (filter && !rel.includes(filter)) continue;
   const out = join(root, rel);
   mkdirSync(dirname(out), { recursive: true });
   if (size === 'svg') {
     writeFileSync(out, SVG_CONTENT);
     console.log('ok SVG', rel);
+  } else if (kind === 'foreground') {
+    writeFileSync(out, drawIconForeground(size));
+    console.log('ok PNG', rel, size + 'x' + size + ' (adaptativo)');
   } else {
     writeFileSync(out, drawIcon(size));
     console.log('ok PNG', rel, size + 'x' + size);

@@ -38,6 +38,10 @@ O app é um site público (PWA):
 Baixe na página de **[Releases](../../releases)** do repositório
 (`editor-v1.0.apk`, assinado com o keystore do projeto).
 
+> O workflow **Build APK** roda a cada push em `main`, sobe o APK novo como
+> artefato do Actions **e atualiza esta release** — o link acima sempre baixa
+> a versão mais recente.
+
 - Instale dando permissão de "fontes desconhecidas" ao instalador.
 - Também dá pra instalar pelo site no Chrome: **⋮ → Instalar app**.
 
