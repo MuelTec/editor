@@ -12,6 +12,9 @@
   --border-ui: #3e384f;
   --header-h: 52px;
   --timeline-h: 302px;
+  /* Altura PADRÃO de toda trilha da linha do tempo (vídeo, texto e música
+     são iguais — a onda deixa de ser o dobro do resto). */
+  --tl-track-h: 54px;
   --sidebar-w: 340px;
   --inspector-w: 320px;
 }
@@ -796,7 +799,7 @@ input[type='range']::-moz-range-thumb {
 }
 
 .tl-track--video {
-  height: 54px;
+  height: var(--tl-track-h);
   display: block;
 }
 
@@ -902,10 +905,10 @@ input[type='range']::-moz-range-thumb {
   border-top: 7px solid #ffffff;
 }
 
-/* Trilha de música */
+/* Trilha de música — MESMA altura das outras (o “zoom” dela era grande demais) */
 .tl-track--music {
-  flex: 1;
-  min-height: 76px;
+  flex: none;
+  height: var(--tl-track-h);
   background: #141414;
 }
 
@@ -1191,7 +1194,7 @@ input[type='range']::-moz-range-thumb {
 
 /* ===== Trilha de TEXTO + quadro a quadro ===== */
 .tl-track--text {
-  height: 32px;
+  height: var(--tl-track-h);
   background: var(--bg-input);
   cursor: default;
 }
@@ -1292,9 +1295,9 @@ input[type='range']::-moz-range-thumb {
   font-variant-numeric: tabular-nums;
 }
 
-/* Telas de toque: pontas de arrastar maiores */
+/* Telas de toque: trilhas e pontas de arrastar maiores */
 @media (pointer: coarse) {
-  .tl-track--text { height: 40px; }
+  :root { --tl-track-h: 56px; }
   .tl-text-handle { width: 16px; }
 }
 

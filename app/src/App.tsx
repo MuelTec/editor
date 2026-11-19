@@ -81,8 +81,35 @@ import {
   type Space,
 } from './lib/panelLayout';
 import { toHorizontal, toVertical } from './lib/toVertical';
+import {
+  canRedo,
+  canUndo,
+  createHistory,
+  pushHistory,
+  redoHistory,
+  undoHistory,
+  type History,
+} from './lib/history';
 import HomeScreen, { type HomeToolId } from './HomeScreen';
 import { FilterThumb, TransitionThumb } from './ThumbPreview';
+
+/** Estado editável que o desfazer/refazer devolve inteiro. */
+interface EditSnapshot {
+  clips: ClipInfo[];
+  texts: TextClip[];
+  modelId: string;
+  customFilter: FilterId | null;
+}
+
+/** Mesmos elementos = mesmo passo (não empurra histórico à toa). */
+function sameSnapshot(a: EditSnapshot, b: EditSnapshot): boolean {
+  return (
+    a.clips === b.clips &&
+    a.texts === b.texts &&
+    a.modelId === b.modelId &&
+    a.customFilter === b.customFilter
+  );
+}
 
 /**
  * EDITOR ESTILO CAPCUT (Etapa 12).
@@ -278,8 +305,74 @@ export default function App() {
   /** Duração escolhida à mão (null = usa a do modelo). */
   const [customTransitionDuration, setCustomTransitionDuration] = useState<number | null>(null);
   const [trimmingId, setTrimmingId] = useState<string | null>(null);
-  /** Filtro escolhido pra montagem inteira (null = o do modelo). */
-  const [customFilter, setCustomFilter] = useState<FilterId | null>(null);
+  /**
+   * Filtro escolhido pra montagem inteira.
+   * `null` = seguir o modelo, mas o padrão é `'none'`: o modelo NÃO injeta
+   * filtro sozinho — quem escolhe é você.
+   */
+  const [customFilter, setCustomFilter] = useState<FilterId | null>('none');
+  // ------------------------------------- histórico (desfazer / refazer)
+  /**
+   * Pilha de passos. Guardamos só REFERÊNCIAS do estado vivo (clips/texts/...),
+   * então desfazer não duplica memória — e `sameSnapshot` impede que o efeito
+   * abaixo regrave o próprio passo que ele acabou de aplicar.
+   */
+  const [hist, setHist] = useState<History<EditSnapshot> | null>(null);
+
+  /** Guarda um passo depois de cada edição (roda após o commit). */
+  useEffect(() => {
+    const cur: EditSnapshot = { clips, texts, modelId, customFilter };
+    if (!hist) {
+      setHist(createHistory(cur));
+      return;
+    }
+    if (sameSnapshot(hist.present, cur)) return;
+    setHist(pushHistory(hist, cur, Date.now()));
+  }, [clips, texts, modelId, customFilter, hist]);
+
+  /** Volta um passo (clips + textos + modelo + filtro de uma vez). */
+  const undo = useCallback(() => {
+    const next = hist ? undoHistory(hist) : null;
+    if (!next) return;
+    setHist(next);
+    setClips(next.present.clips);
+    setTexts(next.present.texts);
+    setModelId(next.present.modelId);
+    setCustomFilter(next.present.customFilter);
+  }, [hist]);
+
+  /** Avança um passo desfeito. */
+  const redo = useCallback(() => {
+    const next = hist ? redoHistory(hist) : null;
+    if (!next) return;
+    setHist(next);
+    setClips(next.present.clips);
+    setTexts(next.present.texts);
+    setModelId(next.present.modelId);
+    setCustomFilter(next.present.customFilter);
+  }, [hist]);
+
+  /** Ctrl+Z = desfazer · Ctrl+Shift+Z ou Ctrl+Y = refazer (não mexe em quem digita). */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) {
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo]);
   /** Clipe selecionado na timeline (dividir/cortar/excluir). */
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   /** Corte selecionado: o que liga este clipe ao PRÓXIMO (transição própria). */
@@ -314,7 +407,16 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const montageCanvasRef = useRef<HTMLCanvasElement>(null);
   const musicAudioRef = useRef<HTMLAudioElement>(null);
-  const musicCanvasRef = useRef<HTMLCanvasElement>(null);
+  /**
+   * O elemento da onda como ESTADO: o efeito que a desenha precisa rodar quando
+   * a linha do tempo aparece (ela não existe na Home). Sem isto o ref já era
+   * `null` na primeira execução e o efeito nunca mais era reexecutado — a onda
+   * ficava um canvas cru de 300×150 até alguém mexer num slider.
+   */
+  const [musicCanvasEl, setMusicCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const attachMusicCanvas = useCallback((el: HTMLCanvasElement | null) => {
+    setMusicCanvasEl(el);
+  }, []);
   const montagePreviewRef = useRef<MontagePreview | null>(null);
   const timeTickRef = useRef(0);
   const musicOffsetRef = useRef(0);
@@ -329,6 +431,12 @@ export default function App() {
   const musicDragStartRef = useRef<{ x: number; offset: number } | null>(null);
   /** Contêiner da linha do tempo (zoom/pan por scroll — Etapa 13). */
   const tlTracksRef = useRef<HTMLDivElement>(null);
+  /** Trilha régua+vídeo: o retângulo de referência do clique/arrasto no tempo. */
+  const tlStackRef = useRef<HTMLDivElement>(null);
+  /** Distância (px) percorrida no gesto de scrub atual: < limiar = "clique". */
+  const scrubMovedRef = useRef(0);
+  /** Ponto onde o ponteiro começou o gesto de scrub. */
+  const scrubOriginRef = useRef<{ x: number; y: number } | null>(null);
   /** Prévia ao vivo do vídeo único: dá pra atualizar sem recriar (não volta a tocar). */
   const livePreviewRef = useRef<LivePreview | null>(null);
   /** Últimos textos/filtro/ajustes — a prévia nasce com eles e depois só recebe update(). */
@@ -683,14 +791,14 @@ export default function App() {
   // visível [viewStart, viewStart+viewSpan] é mapeada pra música com loop
   // ((offset + t) % dur) — onda, batidas e playhead acompanham o zoom.
   useEffect(() => {
-    const canvas = musicCanvasRef.current;
+    const canvas = musicCanvasEl;
     if (!canvas) return;
 
     const draw = () => {
       const parent = canvas.parentElement;
       const w = Math.max(160, parent?.clientWidth ?? 480);
-      // Acompanha a altura da faixa (a timeline pode ficar maior/menor).
-      const h = Math.max(76, Math.round(parent?.clientHeight ?? 76));
+      // Acompanha a altura da faixa (padrão igual às outras trilhas).
+      const h = Math.max(24, Math.round(parent?.clientHeight ?? 54));
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
         canvas.width = Math.round(w * dpr);
@@ -803,6 +911,7 @@ export default function App() {
     window.addEventListener('resize', draw);
     return () => window.removeEventListener('resize', draw);
   }, [
+    musicCanvasEl,
     musicAnalysis,
     musicOffset,
     timelineBeats,
@@ -1364,11 +1473,18 @@ export default function App() {
     [addClips, mode, pickAny],
   );
 
-  /** Clica/arrasta na régua ou na trilha → navega no tempo da JANELA visível. */
+  /**
+   * Clica/arrasta em QUALQUER trilha → navega no tempo da JANELA visível.
+   *
+   * O retângulo de referência é o da trilha régua+vídeo (`tlStackRef`), não o
+   * elemento que recebeu o evento: assim o clique vale igual na régua, nos
+   * clipes, nos textos e nas margens do contêiner.
+   */
   const seekFromEvent = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+    (e: React.MouseEvent<HTMLElement>) => {
       if (videoTotal <= 0 || viewSpan <= 0) return;
-      const rect = e.currentTarget.getBoundingClientRect();
+      const rect = tlStackRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0) return;
       const p = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
       // Sempre num quadro inteiro (como nos editores de vídeo).
       const t = stepTime(viewStartClamped + p * viewSpan, 0, videoTotal);
@@ -1377,6 +1493,32 @@ export default function App() {
     },
     [mode, seekMontage, seekSingle, viewStartClamped, viewSpan, videoTotal],
   );
+
+  /** Toca a partir do ponto onde o cursor está (clique limpo na timeline). */
+  const playFromCursor = useCallback(() => {
+    if (phase !== 'ready' || videoTotal <= 0) return;
+    if (mode === 'montage') {
+      if (!montagePreviewRef.current || montagePlayingRef.current) return;
+      toggleMontagePlay();
+    } else {
+      const v = previewRef.current;
+      if (!v || !v.paused) return;
+      void v.play().then(() => setPlaying(true)).catch(() => undefined);
+    }
+  }, [mode, phase, toggleMontagePlay, videoTotal]);
+
+  /**
+   * Fim do gesto na timeline: se o ponteiro mal se moveu era um CLIQUE →
+   * o vídeo passa a tocar a partir dali; se moveu, era arrasto (scrub) e a
+   * gente só solta o cursor onde ele parou.
+   */
+  const endScrub = useCallback(() => {
+    if (!scrubbingRef.current) return;
+    scrubbingRef.current = false;
+    const moved = scrubMovedRef.current;
+    scrubOriginRef.current = null;
+    if (moved < 6) playFromCursor();
+  }, [playFromCursor]);
 
   /**
    * Arrasta a forma de onda = move a MÚSICA sob a linha do tempo (Etapa 13).
@@ -2429,15 +2571,6 @@ export default function App() {
                       >
                         <span className="model-name">{m.name}</span>
                         <span className="model-desc">{m.description}</span>
-                        <span className="model-tags">
-                          <span className="model-tag">
-                            {FILTERS.find((f) => f.id === m.filter)?.label ?? m.filter}
-                          </span>
-                          <span className="model-tag">
-                            {TRANSITIONS.find((t) => t.id === m.transition)?.label}{' '}
-                            {m.transitionDuration.toFixed(1)}s
-                          </span>
-                        </span>
                       </button>
                     ))}
                   </div>
@@ -2564,21 +2697,11 @@ export default function App() {
                     />
                   </label>
                   <p className="form-hint">
-                    Cada corte pode ter a <strong>sua</strong> transição e duração. O modelo já vem
-                    com filtro + legenda prontos — o que você escolher aqui sobrescreve o dele.
+                    Cada corte pode ter a <strong>sua</strong> transição e duração. O modelo vem
+                    com legenda pronta — o que você escolher aqui sobrescreve a transição dele.
                   </p>
 
                   <h4 className="lib-heading">Filtro de cor</h4>
-                  <div className="chip-row">
-                    <button
-                      type="button"
-                      className={`chip${customFilter === null ? ' chip--on' : ''}`}
-                      onClick={() => setCustomFilter(null)}
-                      title="Usa o filtro do modelo escolhido"
-                    >
-                      Automático
-                    </button>
-                  </div>
                   <div
                     className="chip-row chip-row--thumbs"
                     role="radiogroup"
@@ -2602,10 +2725,8 @@ export default function App() {
                     })}
                   </div>
                   <p className="form-hint">
-                    Vale para a <strong>montagem inteira</strong> (vídeo e fundo borrado), na prévia
-                    e no arquivo. “Automático” usa o filtro do modelo (
-                    <strong>{FILTERS.find((f) => f.id === model.filter)?.label ?? model.filter}</strong>
-                    ).
+                    Escolhido por você — vale para a <strong>montagem inteira</strong> (vídeo e
+                    fundo borrado), na prévia e no arquivo. Nada é aplicado sozinho.
                   </p>
                 </>
               ) : (
@@ -3449,6 +3570,24 @@ export default function App() {
           >
             ▸
           </button>
+          <button
+            className="btn btn--tiny"
+            onClick={undo}
+            disabled={!canEditTimeline || !hist || !canUndo(hist)}
+            aria-label="Desfazer"
+            title="Desfazer (Ctrl+Z)"
+          >
+            ↶
+          </button>
+          <button
+            className="btn btn--tiny"
+            onClick={redo}
+            disabled={!canEditTimeline || !hist || !canRedo(hist)}
+            aria-label="Refazer"
+            title="Refazer (Ctrl+Shift+Z)"
+          >
+            ↷
+          </button>
           <span className="tl-time" title="minutos : segundos : quadros">
             {formatTimecode(videoCurrent)} / {formatTimecode(videoTotal)}
           </span>
@@ -3560,35 +3699,49 @@ export default function App() {
 
           <span className="tl-hint">
             {mode === 'montage'
-              ? 'arraste na régua para navegar · ← → quadro a quadro · Ctrl+role = zoom · arraste a onda para ajustar a música'
-              : 'arraste na régua para navegar · ← → quadro a quadro · Ctrl+role = zoom'}
+              ? 'arraste para navegar · clique para tocar dali · ← → quadro a quadro · Ctrl+role = zoom · arraste a onda para ajustar a música'
+              : 'arraste para navegar · clique para tocar dali · ← → quadro a quadro · Ctrl+role = zoom'}
           </span>
         </div>
 
-        <div className="timeline-tracks" ref={tlTracksRef}>
+        <div
+          className="timeline-tracks"
+          ref={tlTracksRef}
+          onPointerDown={(e) => {
+            // Só o botão primário: botão direito/middle não "navega".
+            if (e.button !== 0) return;
+            scrubbingRef.current = true;
+            scrubMovedRef.current = 0;
+            scrubOriginRef.current = { x: e.clientX, y: e.clientY };
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              /* ponteiro sintético: segue sem captura */
+            }
+            seekFromEvent(e);
+          }}
+          onPointerMove={(e) => {
+            if (!scrubbingRef.current) return;
+            const o = scrubOriginRef.current;
+            if (o) {
+              scrubMovedRef.current = Math.max(
+                scrubMovedRef.current,
+                Math.hypot(e.clientX - o.x, e.clientY - o.y),
+              );
+            }
+            seekFromEvent(e); // arrastando = avança e volta livremente
+          }}
+          onPointerUp={() => {
+            if (!scrubbingRef.current) return;
+            endScrub();
+          }}
+          onPointerCancel={() => {
+            scrubbingRef.current = false;
+            scrubOriginRef.current = null;
+          }}
+        >
           {/* Régua + trilha de vídeo (mesma escala/janela visível) */}
-          <div
-            className="tl-stack"
-            role="presentation"
-            onPointerDown={(e) => {
-              scrubbingRef.current = true;
-              try {
-                e.currentTarget.setPointerCapture(e.pointerId);
-              } catch {
-                /* ponteiro sintético: segue sem captura */
-              }
-              seekFromEvent(e);
-            }}
-            onPointerMove={(e) => {
-              if (scrubbingRef.current) seekFromEvent(e);
-            }}
-            onPointerUp={() => {
-              scrubbingRef.current = false;
-            }}
-            onPointerCancel={() => {
-              scrubbingRef.current = false;
-            }}
-          >
+          <div className="tl-stack" role="presentation" ref={tlStackRef}>
             <div className="tl-ruler">
               {frameMode
                 ? frameTicks.map((f) => (
@@ -3788,21 +3941,31 @@ export default function App() {
               Arrastar = move a música por baixo da linha (Etapa 13). */}
           <div className="tl-track tl-track--music">
             <canvas
-              ref={musicCanvasRef}
+              ref={attachMusicCanvas}
               className="tl-music-canvas"
               onPointerDown={(e) => {
-                if (!musicAnalysis) return;
+                if (!musicAnalysis) return; // sem música → a timeline toda navega
+                e.stopPropagation(); // arrastar aqui move a MÚSICA, não o cursor
                 musicDraggingRef.current = true;
                 startMusicDrag(e);
               }}
               onPointerMove={(e) => {
                 if (musicDraggingRef.current) moveMusicDrag(e);
               }}
-              onPointerUp={() => {
+              onPointerUp={(e) => {
+                const start = musicDragStartRef.current;
+                const moved = start ? Math.abs(e.clientX - start.x) : Number.MAX_SAFE_INTEGER;
                 musicDraggingRef.current = false;
+                musicDragStartRef.current = null;
+                // Clique limpo (sem arrastar) = navega e toca, como nas outras trilhas.
+                if (moved < 6) {
+                  seekFromEvent(e);
+                  playFromCursor();
+                }
               }}
               onPointerCancel={() => {
                 musicDraggingRef.current = false;
+                musicDragStartRef.current = null;
               }}
               style={{ cursor: musicAnalysis ? 'grab' : 'default' }}
             />
