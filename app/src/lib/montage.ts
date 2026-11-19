@@ -547,6 +547,16 @@ export interface MontageRendererOptions {
   layout?: FrameLayout;
   /** Prévia: caminho reduzido do blur (leve em tablets — Etapa 13). */
   fast?: boolean;
+  /**
+   * Limita a largura dos quadros decodificados (Etapa 15 — leveza).
+   *
+   * Sem isto o CanvasSink usa a largura DO ARQUIVO: um clipe 4K vira 3
+   * canvases de ~33MB no pool (≈100MB de VRAM) e cada desenho reescala
+   * 3840px pra caber no quadro — travava tablets. O preview nunca mostra
+   * mais que 1080×1920, então acima disso é pixels jogados fora.
+   * Export usa 1920 (nenhum detalhe visível se perde); prévia usa 720.
+   */
+  sinkMaxWidth?: number;
 }
 
 /**
@@ -611,6 +621,7 @@ export class MontageRenderer {
       /** Por clipe: a trilha de vídeo (vídeo) ou o quadro decodificado (imagem). */
       const sources: { video?: InputVideoTrack; still?: HTMLCanvasElement }[] = [];
       const audioTracks: (InputAudioTrack | null)[] = [];
+      const sinkWidths: (number | undefined)[] = [];
 
       for (let i = 0; i < clips.length; i++) {
         const { file, trimStart, trimEnd } = clips[i];
@@ -625,6 +636,8 @@ export class MontageRenderer {
           trims.push({ trimStart: 0, trimEnd: used });
           sources.push({ still });
           audioTracks.push(null);
+          // Alinha com `sources`: imagem não tem sink, mas ocupa o mesmo índice.
+          sinkWidths.push(undefined);
           continue;
         }
 
@@ -654,6 +667,16 @@ export class MontageRenderer {
         trims.push({ trimStart: start, trimEnd: end });
         sources.push({ video });
         audioTracks.push(await input.getPrimaryAudioTrack());
+
+        // Teto de decodificação (Etapa 15): só corta acima do limite — clipe
+        // pequeno segue no tamanho original (nada de ampliar).
+        const cap = options.sinkMaxWidth;
+        let sinkWidth: number | undefined;
+        if (cap && cap > 0) {
+          const displayWidth = await video.getDisplayWidth();
+          if (displayWidth > cap) sinkWidth = Math.round(cap);
+        }
+        sinkWidths.push(sinkWidth);
       }
 
       // Cada corte tem a sua duração (a do clipe, ou a padrão).
@@ -670,7 +693,13 @@ export class MontageRenderer {
         if (src.still) {
           players.push(new StillPlayer(src.still));
         } else if (src.video) {
-          const sink = new CanvasSink(src.video, { poolSize: 3 });
+          // Largura decodificada limitada (Etapa 15): só corta acima do teto —
+          // clipe pequeno decodifica no tamanho original, sem reescalonar pra cima.
+          const w = sinkWidths[i];
+          const sink = new CanvasSink(
+            src.video,
+            w ? { poolSize: 3, width: w } : { poolSize: 3 },
+          );
           const localStart =
             trims[i].trimStart + Math.max(0, startAt - timeline.clips[i].start);
           players.push(new ClipPlayer(sink, localStart));
@@ -843,6 +872,8 @@ export interface AssembleMontageOptions {
   texts?: TextClip[];
   /** Ajustes finos de imagem (Etapa 10): somados ao filtro do modelo. */
   adjust?: Adjustments;
+  /** Teto da largura decodificada (Etapa 15): padrão 1920 — ver `MontageRendererOptions`. */
+  sinkMaxWidth?: number;
   fps?: number;
   withAudio?: boolean;
   /**
@@ -878,7 +909,13 @@ export async function assembleMontage(
   const warnings: string[] = [];
   const fps = options.fps ?? 30;
   const layout = layoutFor(options.ratio ?? '9:16');
-  const renderer = await MontageRenderer.create({ ...options, layout });
+  // Teto do export (Etapa 15): 1920 cobre tudo que é visível em qualquer
+  // proporção (o fundo borrado é a única área maior — e está desfocado).
+  const renderer = await MontageRenderer.create({
+    ...options,
+    layout,
+    sinkMaxWidth: options.sinkMaxWidth ?? 1920,
+  });
 
   try {
     const { timeline } = renderer;

@@ -1,5 +1,5 @@
 import { FrameComposer } from './compose';
-import type { TextClip } from './textTrack';
+import { PROJECT_FPS, type TextClip } from './textTrack';
 import type { Adjustments, FilterId } from './filters';
 import {
   OUT_HEIGHT,
@@ -89,13 +89,37 @@ export function startLivePreview(
   const scale = canvas.width / OUT_WIDTH;
   let raf = 0;
   let stopped = false;
+  /**
+   * Etapa 15 — leveza (tablets):
+   * - `needsRender`/`lastDrawn*`: vídeo parado e nada mudou = NÃO redesenha
+   *   (antes o MESMO quadro era pintado a 60×/s só porque existe um rAF);
+   * - ritmo `frameMs`: o export sai a PROJECT_FPS (30) — desenhar a 60 não
+   *   muda a aparência e dobra CPU/GPU.
+   */
+  let lastDrawAt = 0;
+  let lastDrawnTime = -1;
+  let lastDrawnWidth = -1;
+  let needsRender = true;
+  const frameMs = 1000 / PROJECT_FPS;
 
-  const draw = () => {
+  const draw = (now: number) => {
     if (stopped) return;
     raf = requestAnimationFrame(draw);
 
     if (video.readyState < 2 || !video.videoWidth) return;
     if (document.hidden) return;
+
+    const playing = !video.paused && !video.ended;
+    const unchanged =
+      !needsRender &&
+      video.currentTime === lastDrawnTime &&
+      video.videoWidth === lastDrawnWidth;
+    if (!playing && unchanged) return;
+    if (playing && now - lastDrawAt < frameMs) return;
+    lastDrawAt = now;
+    lastDrawnTime = video.currentTime;
+    lastDrawnWidth = video.videoWidth;
+    needsRender = false;
 
     // Todo o compositor trabalha em coordenadas 1080×1920;
     // a transformação só reduz o desenho pro tamanho do canvas de prévia.
@@ -117,7 +141,7 @@ export function startLivePreview(
     if (guides) drawGuides(ctx);
   };
 
-  draw();
+  draw(performance.now());
 
   return {
     stop: () => {
@@ -137,6 +161,8 @@ export function startLivePreview(
         // Só os textos mudaram: mantém o compositor e as camadas (arrastar fica leve).
         composer.setTexts(curTexts);
       }
+      // Mudou filtro/ajuste/texto → precisa pintar mesmo com o vídeo parado.
+      needsRender = true;
     },
   };
 }
@@ -160,11 +186,18 @@ export interface MontagePreviewOptions {
    */
   fast?: boolean;
   /**
+  /**
    * De onde a prévia começa (s). A prévia é recriada quando os clipes mudam
    * (dividir, cortar, excluir...): com isso o cursor fica onde estava, em vez
    * de voltar ao 0:00.
    */
   startTime?: number;
+  /**
+   * Teto da largura decodificada da prévia (Etapa 15 — leveza em tablets).
+   * Padrão 720: o canvas de prévia tem 540×960, então acima disso são pixels
+   * que ninguém vê — e um clipe 4K deixava o pool com ~100MB de canvases.
+   */
+  sinkMaxWidth?: number;
   /** (tempoAtual, duração) em segundos — pra barra de posição da UI. */
   onTime?: (time: number, duration: number) => void;
 }
@@ -221,6 +254,8 @@ export function startMontagePreview(
       texts: current.texts,
       adjust: current.adjust,
       fast: current.fast,
+      // Etapa 15: prévia decodifica no tamanho que dá pra VER (720 por padrão).
+      sinkMaxWidth: current.sinkMaxWidth ?? 720,
       startTime: clock,
     });
     if (stopped || gen !== generation) {
